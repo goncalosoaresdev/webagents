@@ -1,0 +1,113 @@
+export interface Attachment {
+  id: string;
+  name: string;
+  size: number;
+  mime: string;
+  state: 'uploading' | 'verifying' | 'ready' | 'deleting';
+}
+
+export type TaskStatus =
+  | 'idle'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'interrupted';
+export type TurnStatus =
+  | 'queued'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'interrupted';
+
+export interface Project {
+  id: string;
+  name: string;
+  path: string;
+  isGitRepository: boolean;
+  branch?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Task {
+  id: string;
+  projectId: string;
+  providerId: string;
+  providerThreadId?: string;
+  title: string;
+  status: TaskStatus;
+  model?: string;
+  reasoningEffort?: string;
+  createdAt: string;
+  updatedAt: string;
+  archivedAt?: string;
+}
+
+export interface Turn {
+  permissionMode?: import('./permissions.ts').PermissionMode;
+  attachments?: readonly Attachment[];
+  id: string;
+  taskId: string;
+  providerTurnId?: string;
+  clientRequestId: string;
+  model?: string;
+  reasoningEffort?: string;
+  requestJson?: string;
+  prompt: string;
+  status: TurnStatus;
+  error?: string;
+  createdAt: string;
+  completedAt?: string;
+}
+
+export type TaskEventType =
+  | 'user.message'
+  | 'agent.message.delta'
+  | 'agent.message.completed'
+  | 'reasoning.summary.delta'
+  | 'reasoning.summary.completed'
+  | 'activity.started'
+  | 'activity.completed'
+  | 'approval.requested'
+  | 'approval.resolved'
+  | 'turn.status'
+  | 'runtime.warning'
+  | 'runtime.error';
+
+export interface TaskEvent {
+  sequence: number;
+  taskId: string;
+  turnId?: string;
+  type: TaskEventType;
+  data: Readonly<Record<string, unknown>>;
+  createdAt: string;
+}
+
+export type ApprovalDecision =
+  | 'accept'
+  | 'acceptForSession'
+  | 'decline'
+  | 'cancel';
+
+export interface ApprovalRequest {
+  id: string;
+  taskId: string;
+  turnId: string;
+  kind: 'command' | 'fileChange';
+  summary: string;
+  details: Readonly<Record<string, unknown>>;
+  status: 'pending' | 'resolved';
+  decision?: ApprovalDecision;
+  createdAt: string;
+  resolvedAt?: string;
+}
+
+export interface TaskDetail {
+  task: Task;
+  project: Project;
+  turns: readonly Turn[];
+  events: readonly TaskEvent[];
+  nextSequence: number;
+  hasMore: boolean;
+  approvals: readonly ApprovalRequest[];
+}

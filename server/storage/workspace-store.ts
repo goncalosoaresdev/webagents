@@ -1,4 +1,6 @@
 import type {
+  TurnExecution,
+  Orchestration,
   ApprovalDecision,
   ApprovalRequest,
   Project,
@@ -30,6 +32,7 @@ export interface CreateTaskInput {
 }
 
 export interface CreateTurnInput {
+  orchestration?: Orchestration;
   permissionMode?: import('../../lib/workspace/permissions.ts').PermissionMode;
   id: string;
   taskId: string;
@@ -50,6 +53,7 @@ export interface AppendEventInput {
 }
 
 export interface CreateApprovalInput {
+  executionId?: string;
   id: string;
   taskId: string;
   turnId: string;
@@ -92,6 +96,23 @@ export interface WorkspaceStore {
     now: string,
     options?: { providerTurnId?: string; error?: string },
   ): void;
+
+  createExecution(execution: TurnExecution): void;
+  updateExecution(
+    id: string,
+    update: Partial<
+      Pick<
+        TurnExecution,
+        | 'status'
+        | 'providerThreadId'
+        | 'providerTurnId'
+        | 'result'
+        | 'error'
+        | 'completedAt'
+      >
+    >,
+  ): void;
+  listExecutions(turnId: string): readonly TurnExecution[];
 
   appendEvent(input: AppendEventInput): TaskEvent;
   listEvents(

@@ -1,3 +1,5 @@
+import { speechApi, speechSocket } from './speech/routes.ts';
+import type { SpeechService } from './speech/service.ts';
 import type { TerminalService } from './terminal/service.ts';
 import { terminalApi, terminalSocket } from './terminal/routes.ts';
 import type { ProviderInstallations } from './core/provider-installations.ts';
@@ -47,6 +49,7 @@ const clientMessageSchema = z.discriminatedUnion('type', [
 ]);
 
 export interface AppDependencies {
+  speech?: SpeechService;
   terminals?: TerminalService;
   installations?: ProviderInstallations;
   limits?: ProviderLimitsService;
@@ -127,6 +130,8 @@ export async function buildApp(
 
   if (dependencies.terminals)
     terminalSocket(app, dependencies.terminals, config);
+
+  if (dependencies.speech) speechSocket(app, dependencies.speech, config);
 
   const unsubscribe = providers.subscribe((snapshot) =>
     hub.broadcastProviderSnapshot(snapshot),
@@ -215,6 +220,7 @@ export async function buildApp(
           });
         }
       });
+      if (dependencies.speech) speechApi(api, dependencies.speech);
       if (dependencies.terminals)
         await terminalApi(api, dependencies.terminals);
       if (dependencies.attachments)

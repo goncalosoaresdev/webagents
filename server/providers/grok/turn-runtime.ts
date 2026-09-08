@@ -1,3 +1,4 @@
+import type { ProviderModel } from '../../../lib/providers/contracts.ts';
 import { readFile } from 'node:fs/promises';
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
@@ -419,8 +420,8 @@ export function permissionChoice(
 
 function sessionResultModels(
   result: Record<string, unknown>,
-  fallback: readonly { id: string; isDefault?: boolean }[],
-): { id: string; isDefault?: boolean }[] {
+  fallback: readonly ProviderModel[],
+): ProviderModel[] {
   const parsed = parseGrokModels(result.models ?? result);
   return parsed.length ? parsed : [...fallback];
 }

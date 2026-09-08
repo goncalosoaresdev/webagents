@@ -7,6 +7,7 @@ import {
   DialogTitle,
   DialogDescription,
 } from '@/components/ui/dialog';
+import { SpeechSettings } from './speech-settings';
 import { ProviderLogo } from '@/components/provider-logo';
 import type { WebcodeApi } from '@/lib/api/client';
 import type { ProviderInstallation } from '@/lib/providers/installation';
@@ -201,6 +202,7 @@ export function ProviderSettings({
             );
           })}
         </div>
+        {open && <SpeechSettings api={api} />}
       </DialogContent>
     </Dialog>
   );

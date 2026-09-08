@@ -104,6 +104,8 @@ void test('shutdown waits for final status and rejects changed idempotency paylo
     () => service.startTurn(task.id, { ...input, model: 'changed' }),
     /different content/,
   );
+  // Wait until the runtime starts; shutdown before startup now correctly skips execution.
+  await new Promise((resolve) => setImmediate(resolve));
   let closed = false;
   const closing = service.close().then(() => {
     closed = true;

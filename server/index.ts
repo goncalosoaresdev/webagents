@@ -1,3 +1,7 @@
+import { readFileSync } from 'node:fs';
+import { parseEnv } from 'node:util';
+import { SpeechService } from './speech/service.ts';
+import { MuseSpeechProvider } from './speech/muse.ts';
 import { TerminalService } from './terminal/service.ts';
 import { ResourceNotFoundError } from './storage/errors.ts';
 import { ProviderInstallations } from './core/provider-installations.ts';
@@ -22,6 +26,15 @@ import { AgentService } from './core/agent-service.ts';
 import { CodexTurnRuntime } from './providers/codex/turn-runtime.ts';
 import { MuseTurnRuntime } from './providers/muse/turn-runtime.ts';
 import { GrokTurnRuntime } from './providers/grok/turn-runtime.ts';
+
+// Read speech credentials directly too, for standalone dev:server/watch runs.
+// Do not replace unrelated configuration already supplied by the launcher.
+let speechEnvironment: NodeJS.ProcessEnv = {};
+try {
+  speechEnvironment = parseEnv(readFileSync('.env', 'utf8'));
+} catch (error) {
+  if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+}
 
 const config = loadConfig();
 const providers = new ProviderRegistry(
@@ -132,6 +145,7 @@ const agents: AgentService = new AgentService(
   ],
   {
     attachments,
+    probeProvider: (id) => providers.probe(id, { force: true }),
     maintenance: installations.isUpdating,
     validatePath: (path) => projects.validatePath(path),
     onError: (error): void => {
@@ -139,7 +153,19 @@ const agents: AgentService = new AgentService(
     },
   },
 );
+const speech = new SpeechService(
+  [
+    new MuseSpeechProvider(
+      process.env.MODEL_API_KEY ??
+        process.env.META_API_KEY ??
+        speechEnvironment.MODEL_API_KEY ??
+        speechEnvironment.META_API_KEY,
+    ),
+  ],
+  resolve(config.dataDirectory, 'speech-settings.json'),
+);
 const app = await buildApp({
+  speech,
   terminals,
   installations,
   limits,

@@ -1,3 +1,21 @@
+import { orchestrationSchema } from '../../lib/workspace/orchestration.ts';
+import {
+  ExecutionReport,
+  pathsOverlap,
+  planningPrompt,
+  workerPrompt,
+  reviewPrompt,
+  validateOrchestrationModel,
+} from './orchestration.ts';
+import type { ProviderSnapshot } from '../../lib/providers/contracts.ts';
+import type {
+  Orchestration,
+  TurnExecution,
+} from '../../lib/workspace/contracts.ts';
+import type {
+  ExecuteTurnInput,
+  ExecuteTurnResult,
+} from '../runtime/agent-runtime.ts';
 import type { AttachmentService } from '../attachments/service.ts';
 import { randomUUID } from 'node:crypto';
 import type {
@@ -26,6 +44,14 @@ interface PendingApproval {
 export class AgentService {
   readonly #runtimes = new Map<string, AgentRuntime>();
   readonly #pendingApprovals = new Map<string, PendingApproval>();
+  readonly #workspaces = new Map<
+    string,
+    { path: string; orchestration: boolean }
+  >();
+  readonly #activeExecutions = new Map<
+    string,
+    { runtime: AgentRuntime; id: string }
+  >();
   readonly #controllers = new Map<string, AbortController>();
   #closed = false;
   #closing?: Promise<void>;
@@ -36,8 +62,10 @@ export class AgentService {
     private readonly hub: ConnectionHub,
     runtimes: readonly AgentRuntime[],
     private readonly options: {
+      probeProvider?: (id: string) => Promise<ProviderSnapshot>;
+      orchestrationTimeoutMs?: number;
       maintenance?: () => boolean;
-      attachments?: AttachmentService;
+      attachments?: Pick<AttachmentService, 'list' | 'bind' | 'prepare'>;
       validatePath?: (path: string) => string;
       maxConcurrentTurns?: number;
       onError?: (error: unknown) => void;
@@ -107,6 +135,7 @@ export class AgentService {
   startTurn(
     taskId: string,
     input: {
+      orchestration?: Orchestration;
       attachmentIds?: string[];
       clientRequestId: string;
       prompt: string;
@@ -151,6 +180,24 @@ export class AgentService {
       throw new ConflictError(
         'This provider does not support the selected permission mode.',
       );
+    if (input.orchestration) {
+      if (!orchestrationSchema.safeParse(input.orchestration).success)
+        throw new ConflictError('Choose a valid worker provider and model.');
+      if (!(input.model ?? task.model))
+        throw new ConflictError('Select a lead model before orchestrating.');
+      const worker = this.#runtimes.get(input.orchestration.worker.providerId);
+      if (!worker || !this.options.probeProvider)
+        throw new ConflictError('Orchestration is unavailable.');
+      const permission = input.permissionMode ?? 'workspace';
+      if (
+        !runtime.permissionModes?.includes('read-only') ||
+        !runtime.permissionModes?.includes(permission) ||
+        !worker.permissionModes?.includes(permission)
+      )
+        throw new ConflictError(
+          'These providers do not support the required orchestration permissions.',
+        );
+    }
     const project = this.store.getProject(task.projectId);
     if (!project) throw new ResourceNotFoundError('Project', task.projectId);
 
@@ -159,6 +206,15 @@ export class AgentService {
         'All execution slots are busy. Try again shortly.',
       );
     const cwd = this.options.validatePath?.(project.path) ?? project.path;
+    for (const running of this.#workspaces.values()) {
+      if (
+        (input.orchestration || running.orchestration) &&
+        pathsOverlap(cwd, running.path)
+      )
+        throw new ConflictError(
+          'This workspace overlaps an active task. Wait for it to finish before orchestrating or editing here.',
+        );
+    }
     const now = new Date().toISOString();
     const initialEvents: TaskEvent[] = [];
     const created = this.store.transaction(() => {
@@ -171,6 +227,7 @@ export class AgentService {
         reasoningEffort: input.reasoningEffort ?? task.reasoningEffort,
         permissionMode: input.permissionMode ?? 'workspace',
         requestJson: requestIdentity(input),
+        orchestration: input.orchestration,
         now,
       });
       if (!created.created) return created;
@@ -210,7 +267,16 @@ export class AgentService {
     for (const event of initialEvents) this.hub.broadcastTaskEvent(event);
 
     const controller = new AbortController();
+    controller.signal.addEventListener(
+      'abort',
+      () => this.#cancelApprovalsForTurn(created.turn.id),
+      { once: true },
+    );
     this.#controllers.set(taskId, controller);
+    this.#workspaces.set(taskId, {
+      path: cwd,
+      orchestration: Boolean(input.orchestration),
+    });
     const run = this.#run(runtime, task, cwd, created.turn, input, controller)
       .catch((error: unknown) => {
         this.options.onError?.(error);
@@ -223,24 +289,23 @@ export class AgentService {
   async interrupt(taskId: string): Promise<boolean> {
     const task = this.store.getTask(taskId);
     if (!task) throw new ResourceNotFoundError('Task', taskId);
-    const runtime = this.#runtimes.get(task.providerId);
-    if (!runtime || !this.#controllers.has(taskId)) return false;
-    const controller = this.#controllers.get(taskId)!;
-    // Give the provider a brief opportunity to interrupt cooperatively, then
-    // force cancellation even if its acknowledgement/completion never arrives.
-    const timer = setTimeout(() => controller.abort(), 2_000);
-    try {
-      await Promise.race([
-        runtime.interrupt(taskId).catch(() => false),
-        new Promise<void>((resolve) =>
-          controller.signal.addEventListener('abort', () => resolve(), {
-            once: true,
+    const controller = this.#controllers.get(taskId);
+    if (!controller) return false;
+    // Abort the sequence first: a completion racing Stop must not launch another phase.
+    controller.abort();
+    const active = this.#activeExecutions.get(taskId);
+    if (active) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          active.runtime.interrupt(active.id).catch(() => false),
+          new Promise<void>((resolve) => {
+            timer = setTimeout(resolve, 2_000);
           }),
-        ),
-      ]);
-    } finally {
-      clearTimeout(timer);
-      controller.abort();
+        ]);
+      } finally {
+        clearTimeout(timer);
+      }
     }
     return true;
   }
@@ -261,6 +326,7 @@ export class AgentService {
     this.#pendingApprovals.delete(id);
     this.#emit(resolved.taskId, resolved.turnId, 'approval.resolved', {
       approvalId: id,
+      ...(resolved.executionId ? { executionId: resolved.executionId } : {}),
       decision,
     });
     pending.resolve(decision);
@@ -293,47 +359,40 @@ export class AgentService {
     let finalStatus: 'completed' | 'failed' | 'interrupted' = 'failed';
     let error: string | undefined;
     try {
-      const result = await runtime.executeTurn(
-        {
-          taskId: task.id,
-          providerThreadId: task.providerThreadId,
-          cwd,
-          permissionMode: turn.permissionMode ?? 'workspace',
-          attachments: await this.options.attachments?.prepare(turn.id),
-          prompt: input.prompt,
-          model: input.model ?? task.model,
-          reasoningEffort: input.reasoningEffort ?? task.reasoningEffort,
-        },
-        {
-          onProviderThread: (id) =>
-            this.store.setTaskProviderThreadId(
-              task.id,
-              id,
-              new Date().toISOString(),
-            ),
-          onProviderTurn: (id) =>
-            this.store.setTurnStatus(
-              turn.id,
-              'running',
-              new Date().toISOString(),
-              { providerTurnId: id },
-            ),
-          onEvent: (event) => this.#onRuntimeEvent(task.id, turn.id, event),
-          requestApproval: (request) =>
-            this.#requestApproval(task.id, turn.id, request),
-          withdrawApproval: (requestId) => {
-            for (const [id, pending] of this.#pendingApprovals) {
-              if (
-                pending.request.turnId === turn.id &&
-                pending.runtimeRequestId === requestId
-              )
-                this.resolveApproval(id, 'cancel');
-            }
-          },
-        },
-        controller.signal,
-      );
-      finalStatus = controller.signal.aborted ? 'interrupted' : result.status;
+      const prepared = await this.options.attachments?.prepare(turn.id);
+      controller.signal.throwIfAborted();
+      const result = turn.orchestration
+        ? await this.#orchestrate(
+            runtime,
+            task,
+            cwd,
+            turn,
+            prepared,
+            controller,
+          )
+        : await this.#execute(
+            runtime,
+            task,
+            turn,
+            {
+              taskId: task.id,
+              providerThreadId: task.providerThreadId,
+              cwd,
+              prompt: input.prompt,
+              model: turn.model,
+              reasoningEffort: turn.reasoningEffort,
+              permissionMode: turn.permissionMode ?? 'workspace',
+              attachments: prepared,
+            },
+            controller,
+          );
+
+      finalStatus =
+        turn.orchestration && result.status === 'failed' && result.error
+          ? 'failed'
+          : controller.signal.aborted
+            ? 'interrupted'
+            : result.status;
       error = result.error;
     } catch (cause) {
       finalStatus = controller.signal.aborted ? 'interrupted' : 'failed';
@@ -345,6 +404,8 @@ export class AgentService {
         this.#emit(task.id, turn.id, 'runtime.error', { message: error });
     } finally {
       this.#controllers.delete(task.id);
+      this.#workspaces.delete(task.id);
+      this.#activeExecutions.delete(task.id);
       this.#cancelApprovalsForTurn(turn.id);
       const now = new Date().toISOString();
       const event = this.store.transaction(() => {
@@ -362,6 +423,310 @@ export class AgentService {
     }
   }
 
+  async #execute(
+    runtime: AgentRuntime,
+    task: Task,
+    turn: Turn,
+    input: ExecuteTurnInput,
+    controller: AbortController,
+    execution?: TurnExecution,
+    report?: ExecutionReport,
+  ): Promise<ExecuteTurnResult> {
+    controller.signal.throwIfAborted();
+    let listening = true;
+    this.#activeExecutions.set(task.id, { runtime, id: input.taskId });
+    const accepts = () => listening && !controller.signal.aborted;
+    try {
+      return await runtime.executeTurn(
+        input,
+        {
+          onProviderThread: (id) => {
+            if (!accepts()) return;
+            if (execution)
+              this.store.updateExecution(execution.id, {
+                providerThreadId: id,
+              });
+            if (!execution || execution.phase !== 'work')
+              this.store.setTaskProviderThreadId(
+                task.id,
+                id,
+                new Date().toISOString(),
+              );
+          },
+          onProviderTurn: (id) => {
+            if (!accepts()) return;
+            if (execution)
+              this.store.updateExecution(execution.id, { providerTurnId: id });
+            else
+              this.store.setTurnStatus(
+                turn.id,
+                'running',
+                new Date().toISOString(),
+                { providerTurnId: id },
+              );
+          },
+          onEvent: (event) => {
+            if (!accepts()) return;
+            report?.add(event);
+            this.#onRuntimeEvent(
+              task.id,
+              turn.id,
+              execution
+                ? {
+                    ...event,
+                    data: {
+                      ...event.data,
+                      executionId: execution.id,
+                      phase: execution.phase,
+                      providerId: execution.providerId,
+                      ...(typeof event.data.itemId === 'string'
+                        ? { itemId: `${execution.id}:${event.data.itemId}` }
+                        : {}),
+                    },
+                  }
+                : event,
+            );
+          },
+          requestApproval: (request) =>
+            accepts()
+              ? this.#requestApproval(
+                  task.id,
+                  turn.id,
+                  execution
+                    ? {
+                        ...request,
+                        summary: `${execution.providerId} · ${execution.phase}: ${request.summary}`,
+                      }
+                    : request,
+                  execution?.id,
+                )
+              : Promise.resolve('cancel'),
+          withdrawApproval: (requestId) => {
+            if (!accepts()) return;
+            for (const [id, pending] of this.#pendingApprovals) {
+              if (
+                pending.request.turnId === turn.id &&
+                pending.request.executionId === execution?.id &&
+                pending.runtimeRequestId === requestId
+              )
+                this.resolveApproval(id, 'cancel');
+            }
+          },
+        },
+        controller.signal,
+      );
+    } catch (cause) {
+      this.options.onError?.(cause);
+      return {
+        status: controller.signal.aborted ? 'interrupted' : 'failed',
+        error: controller.signal.aborted
+          ? undefined
+          : 'Provider execution failed. Check the server logs.',
+      };
+    } finally {
+      listening = false;
+      this.#activeExecutions.delete(task.id);
+      this.#cancelApprovalsForTurn(turn.id);
+    }
+  }
+
+  async #orchestrate(
+    lead: AgentRuntime,
+    task: Task,
+    cwd: string,
+    turn: Turn,
+    attachments: ExecuteTurnInput['attachments'],
+    controller: AbortController,
+  ): Promise<ExecuteTurnResult> {
+    const worker = turn.orchestration!.worker;
+    const workerRuntime = this.#runtimes.get(worker.providerId)!;
+    let timedOut = false;
+    // A hard overall limit includes time spent waiting for approval.
+    const timer = setTimeout(
+      () => {
+        timedOut = true;
+        controller.abort();
+      },
+      this.options.orchestrationTimeoutMs ?? 60 * 60_000,
+    );
+    timer.unref?.();
+    let execution: TurnExecution | undefined;
+    try {
+      // Discovery is shared and bounded by ProviderRegistry; Stop detaches this run immediately.
+      const snapshots = await new Promise<ProviderSnapshot[]>(
+        (resolve, reject) => {
+          const abort = () => reject(controller.signal.reason);
+          controller.signal.addEventListener('abort', abort, { once: true });
+          Promise.all([
+            this.options.probeProvider!(task.providerId),
+            this.options.probeProvider!(worker.providerId),
+          ])
+            .then(resolve, reject)
+            .finally(() =>
+              controller.signal.removeEventListener('abort', abort),
+            );
+        },
+      );
+      controller.signal.throwIfAborted();
+      const hasImages = Boolean(
+        attachments?.some((asset) => asset.mime.startsWith('image/')),
+      );
+      validateOrchestrationModel(
+        snapshots[0],
+        turn.model!,
+        turn.reasoningEffort,
+        hasImages,
+      );
+      validateOrchestrationModel(
+        snapshots[1],
+        worker.model,
+        worker.reasoningEffort,
+        hasImages,
+      );
+      let brief = '';
+      let workerReport = '';
+      for (const phase of ['plan', 'work', 'review'] as const) {
+        controller.signal.throwIfAborted();
+        // The path may have been replaced since admission.
+        if (this.options.validatePath) this.options.validatePath(cwd);
+        const isWorker = phase === 'work';
+        const runtime = isWorker ? workerRuntime : lead;
+        const prompt =
+          phase === 'plan'
+            ? planningPrompt(turn.prompt)
+            : isWorker
+              ? workerPrompt(turn.prompt, brief)
+              : reviewPrompt(turn.prompt, workerReport);
+        execution = {
+          id: randomUUID(),
+          turnId: turn.id,
+          phase,
+          providerId: runtime.providerId,
+          model: isWorker ? worker.model : turn.model!,
+          reasoningEffort:
+            (isWorker ? worker.reasoningEffort : turn.reasoningEffort) ??
+            snapshots[isWorker ? 1 : 0].models
+              .find(
+                (model) => model.id === (isWorker ? worker.model : turn.model),
+              )
+              ?.capabilities.find(
+                (capability) => capability.id === 'reasoningEffort',
+              )?.defaultValue,
+          permissionMode:
+            phase === 'plan'
+              ? 'read-only'
+              : (turn.permissionMode ?? 'workspace'),
+          status: 'running',
+          prompt,
+          createdAt: new Date().toISOString(),
+        };
+        const started = this.store.transaction(() => {
+          this.store.createExecution(execution!);
+          return this.store.appendEvent({
+            taskId: task.id,
+            turnId: turn.id,
+            type: 'execution.status',
+            data: {
+              executionId: execution!.id,
+              phase,
+              providerId: runtime.providerId,
+              status: 'running',
+            },
+            now: execution!.createdAt,
+          });
+        });
+        this.hub.broadcastTaskEvent(started);
+        const report = new ExecutionReport(phase === 'plan' ? 16_000 : 32_000);
+        const outcome = await this.#execute(
+          runtime,
+          task,
+          turn,
+          {
+            // Runtime taskId is an opaque process-ownership key, separate from the UI task.
+            taskId: execution.id,
+            providerThreadId: isWorker
+              ? undefined
+              : this.store.getTask(task.id)?.providerThreadId,
+            cwd,
+            prompt,
+            model: execution.model,
+            reasoningEffort: execution.reasoningEffort,
+            permissionMode: execution.permissionMode,
+            attachments,
+          },
+          controller,
+          execution,
+          report,
+        );
+        controller.signal.throwIfAborted();
+        if (outcome.status !== 'completed') {
+          this.#finishExecution(
+            task.id,
+            execution,
+            outcome.status,
+            undefined,
+            outcome.error,
+          );
+          execution = undefined;
+          return outcome;
+        }
+        const result = report.finish();
+        this.#finishExecution(task.id, execution, 'completed', result);
+        execution = undefined;
+        if (phase === 'plan') brief = result;
+        if (phase === 'work') workerReport = result;
+      }
+      return { status: 'completed' };
+    } catch (cause) {
+      const status =
+        controller.signal.aborted && !timedOut ? 'interrupted' : 'failed';
+      const error = timedOut
+        ? 'Orchestration exceeded its execution time limit (including approval waiting).'
+        : controller.signal.aborted
+          ? undefined
+          : cause instanceof Error
+            ? cause.message
+            : 'Orchestration failed.';
+      if (execution)
+        this.#finishExecution(task.id, execution, status, undefined, error);
+      return { status, error };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  #finishExecution(
+    taskId: string,
+    execution: TurnExecution,
+    status: TurnExecution['status'],
+    result?: string,
+    error?: string,
+  ): void {
+    const now = new Date().toISOString();
+    const event = this.store.transaction(() => {
+      this.store.updateExecution(execution.id, {
+        status,
+        result,
+        error,
+        completedAt: now,
+      });
+      return this.store.appendEvent({
+        taskId,
+        turnId: execution.turnId,
+        type: 'execution.status',
+        data: {
+          executionId: execution.id,
+          phase: execution.phase,
+          providerId: execution.providerId,
+          status,
+          ...(error ? { error } : {}),
+        },
+        now,
+      });
+    });
+    this.hub.broadcastTaskEvent(event);
+  }
+
   #onRuntimeEvent(taskId: string, turnId: string, event: RuntimeEvent): void {
     this.#emit(taskId, turnId, event.type, event.data);
   }
@@ -370,11 +735,13 @@ export class AgentService {
     taskId: string,
     turnId: string,
     request: RuntimeApprovalRequest,
+    executionId?: string,
   ): Promise<ApprovalDecision> {
     const approval = this.store.createApproval({
       id: randomUUID(),
       taskId,
       turnId,
+      executionId,
       providerRequestId: request.providerRequestId,
       method: request.kind,
       summary: request.summary,
@@ -383,6 +750,7 @@ export class AgentService {
     });
     this.#emit(taskId, turnId, 'approval.requested', {
       approvalId: approval.id,
+      ...(executionId ? { executionId } : {}),
       kind: approval.kind,
       summary: approval.summary,
       details: approval.details,
@@ -399,9 +767,7 @@ export class AgentService {
   #cancelApprovalsForTurn(turnId: string): void {
     for (const [id, pending] of this.#pendingApprovals) {
       if (pending.request.turnId !== turnId) continue;
-      this.store.resolveApproval(id, 'cancel', new Date().toISOString());
-      pending.resolve('cancel');
-      this.#pendingApprovals.delete(id);
+      this.resolveApproval(id, 'cancel');
     }
   }
 
@@ -428,6 +794,7 @@ function titleFromPrompt(prompt: string): string {
 }
 
 function requestIdentity(input: {
+  orchestration?: Orchestration;
   attachmentIds?: string[];
   prompt: string;
   model?: string;
@@ -438,6 +805,20 @@ function requestIdentity(input: {
     input.prompt,
     input.model ?? null,
     input.reasoningEffort ?? null,
+    ...(input.orchestration
+      ? [
+          {
+            orchestration: {
+              worker: {
+                providerId: input.orchestration.worker.providerId,
+                model: input.orchestration.worker.model,
+                reasoningEffort:
+                  input.orchestration.worker.reasoningEffort ?? null,
+              },
+            },
+          },
+        ]
+      : []),
     ...(input.attachmentIds?.length ? [input.attachmentIds] : []),
     ...(input.permissionMode && input.permissionMode !== 'workspace'
       ? [{ permissionMode: input.permissionMode }]

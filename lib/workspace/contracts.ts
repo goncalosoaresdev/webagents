@@ -43,7 +43,32 @@ export interface Task {
   archivedAt?: string;
 }
 
+export interface Orchestration {
+  worker: { providerId: string; model: string; reasoningEffort?: string };
+}
+
+export type ExecutionPhase = 'plan' | 'work' | 'review';
+export interface TurnExecution {
+  id: string;
+  turnId: string;
+  phase: ExecutionPhase;
+  providerId: string;
+  model: string;
+  reasoningEffort?: string;
+  permissionMode: import('./permissions.ts').PermissionMode;
+  providerThreadId?: string;
+  providerTurnId?: string;
+  status: TurnStatus;
+  prompt: string;
+  result?: string;
+  error?: string;
+  createdAt: string;
+  completedAt?: string;
+}
+
 export interface Turn {
+  orchestration?: Orchestration;
+  executions?: readonly TurnExecution[];
   permissionMode?: import('./permissions.ts').PermissionMode;
   attachments?: readonly Attachment[];
   id: string;
@@ -61,6 +86,7 @@ export interface Turn {
 }
 
 export type TaskEventType =
+  | 'execution.status'
   | 'user.message'
   | 'agent.message.delta'
   | 'agent.message.completed'
@@ -90,6 +116,7 @@ export type ApprovalDecision =
   | 'cancel';
 
 export interface ApprovalRequest {
+  executionId?: string;
   id: string;
   taskId: string;
   turnId: string;

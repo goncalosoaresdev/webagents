@@ -12,6 +12,7 @@ model discovery, deterministic process ownership, and provider-neutral UI events
 - Responsive, Codex-inspired browser workspace
 - Project source picker for existing VPS folders, HTTPS/SSH Git URLs, and GitHub repositories
 - Provider and model picker interaction
+- Orchestration between installed providers (Codex, Muse and Grok) with persisted phases, scoped approvals, cancellation and workspace reservations
 - Provider-neutral TypeScript contracts
 - Codex App Server JSON-RPC client with bounded messages, requests, and diagnostics
 - Codex authentication and model discovery adapter
@@ -95,3 +96,13 @@ or `muse serve` directly to the internet. Authenticate Muse as the same Unix use
 (`muse login` or `META_API_KEY`).
 
 See [Provider architecture](docs/provider-architecture.md) for the adapter boundary and invariants.
+
+## Orchestration
+
+Choose a lead model, then type `@` or click **Orchestrate** to select a worker from any ready installed provider. The compact worker chip can be clicked to change the model or removed to disable orchestration. The lead prepares a read-only assignment, the worker implements it with the selected permissions, and the lead reviews the result in the same task. Typing `orchestrate` highlights the suggestion; it does not enable routing on its own.
+
+See [Orchestration operation and manual checks](docs/orchestration.md) for behavior, limits, and manual integration steps.
+
+### Live dictation
+
+Enable a speech provider under Settings → Speech to text, then use the composer microphone. Muse Voice Transcribe is included; other adapters can be registered independently of coding providers. Set `MODEL_API_KEY` on the backend first. See [speech setup and extension guide](docs/speech-to-text.md).

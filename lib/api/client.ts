@@ -74,6 +74,11 @@ export class WebcodeApi {
         )
       : this.get<import('../providers/limits.ts').ProviderLimits>(path);
   }
+  speechSettings() { return this.get<import('../speech/contracts.ts').SpeechSettings>('/speech/settings'); }
+  saveSpeechSettings(settings: import('../speech/contracts.ts').SpeechPreferences) {
+    return this.post<import('../speech/contracts.ts').SpeechSettings>('/speech/settings', settings);
+  }
+  speechTicket() { return this.post<{ token: string }>('/speech/ticket', {}); }
   installations() {
     return this.get<
       import('../providers/installation.ts').ProviderInstallation[]
@@ -152,6 +157,7 @@ export class WebcodeApi {
   startTurn(
     taskId: string,
     input: {
+      orchestration?: import('../workspace/contracts.ts').Orchestration;
       attachmentIds?: string[];
       clientRequestId: string;
       prompt: string;

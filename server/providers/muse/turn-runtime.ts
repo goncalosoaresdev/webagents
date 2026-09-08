@@ -260,9 +260,18 @@ export class MuseTurnRuntime implements AgentRuntime {
     let nextApproval = 0;
     let waitingForApproval = 0;
     let idleTimer: ReturnType<typeof setTimeout> | undefined;
+    let warningTimer: ReturnType<typeof setTimeout> | undefined;
     const resetWatchdog = () => {
       clearTimeout(idleTimer);
+      clearTimeout(warningTimer);
       if (!waitingForApproval) {
+        warningTimer = setTimeout(() => {
+          handlers.onEvent({
+            type: 'runtime.warning',
+            data: { message: 'Muse has sent no activity for a minute. It may still be working or waiting on a tool. You can stop this task if it remains unresponsive.' },
+          });
+        }, 60_000);
+        warningTimer.unref?.();
         idleTimer = setTimeout(
           () => state.controller.abort(new Error('Muse stopped responding')),
           this.#idleTimeoutMs,
@@ -271,6 +280,10 @@ export class MuseTurnRuntime implements AgentRuntime {
       }
     };
     resetWatchdog();
+    const startupTimer = setTimeout(() => {
+      state.controller.abort(new Error('Muse startup timed out while opening the session or starting the turn. No prompt was replayed.'));
+    }, this.#options.timeoutMs ?? 60_000);
+    startupTimer.unref?.();
     const stop = () => {
       void state.host?.client.close().catch(() => undefined);
     };
@@ -410,6 +423,8 @@ export class MuseTurnRuntime implements AgentRuntime {
         }),
         combined,
       );
+      clearTimeout(startupTimer);
+      resetWatchdog();
       state.turnId = turn.turnId;
       handlers.onProviderTurn(turn.turnId);
       const kinds = new Map<string, string>();
@@ -486,13 +501,16 @@ export class MuseTurnRuntime implements AgentRuntime {
       ]);
       try {
         const [outcome] = await abortable(
-          Promise.all([turn.completed, streams]),
+          Promise.race([
+            Promise.all([turn.completed, streams]),
+            promptWatch.then(() => new Promise<never>(() => {})),
+          ]),
           combined,
         );
         return turnOutcome(outcome);
       } finally {
         prompts.abort();
-        await promptWatch.catch(() => undefined);
+        await promptWatch;
       }
     } catch (error) {
       const message = publicError(error, 'Muse execution failed.');
@@ -504,7 +522,7 @@ export class MuseTurnRuntime implements AgentRuntime {
       const abortMessage =
         abortReason instanceof Error ? abortReason.message : '';
       if (
-        /stopped responding|could not restore its event stream|could not apply the approval/i.test(
+        /startup timed out|stopped responding|could not restore its event stream|could not apply the approval/i.test(
           abortMessage,
         )
       ) {
@@ -516,6 +534,8 @@ export class MuseTurnRuntime implements AgentRuntime {
       return { status: 'failed', error: message };
     } finally {
       clearTimeout(idleTimer);
+      clearTimeout(warningTimer);
+      clearTimeout(startupTimer);
       combined.removeEventListener('abort', stop);
       for (const id of pending) handlers.withdrawApproval?.(id);
       await state.host?.client.close().catch(() => undefined);
@@ -542,13 +562,19 @@ export class MuseTurnRuntime implements AgentRuntime {
               'The provider requested an interaction this adapter does not support. The request was declined.',
           },
         });
-        await host.connection
-          .command('userInput/cancel', {
-            sessionId: session.sessionId,
-            userInputId: id,
-            reason: 'unsupported_in_webcode',
-          })
-          .catch(() => undefined);
+        try {
+          await abortable(
+            host.connection.command('userInput/cancel', {
+              sessionId: session.sessionId,
+              userInputId: id,
+              reason: 'unsupported_in_webcode',
+            }),
+            AbortSignal.any([signal, AbortSignal.timeout(this.#options.timeoutMs ?? 15_000)]),
+          );
+        } catch {
+          if (signal.aborted) return;
+          throw new Error('Muse could not dismiss an unsupported question. Stop and retry with the required details in your prompt.');
+        }
       }
       try {
         await abortable(
@@ -590,6 +616,7 @@ export class MuseTurnRuntime implements AgentRuntime {
         );
       } finally {
         clearTimeout(timer);
+        state.controller.abort(new Error('Muse turn interrupted.'));
       }
     } else {
       state.controller.abort(new Error('Muse startup cancelled.'));

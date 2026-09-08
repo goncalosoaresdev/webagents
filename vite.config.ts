@@ -8,6 +8,7 @@ const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === 'seatbelt';
 
 const proxy = {
   '/api': 'http://127.0.0.1:8787',
+  '/speech-ws': { target: 'ws://127.0.0.1:8787', ws: true },
   '/terminal-ws': { target: 'ws://127.0.0.1:8787', ws: true },
   '/ws': { target: 'ws://127.0.0.1:8787', ws: true },
 };

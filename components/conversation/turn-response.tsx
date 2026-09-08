@@ -1,5 +1,7 @@
 'use client';
 
+import { modelDisplayName, providerDisplayName } from '@/lib/providers/display';
+
 import { useEffect, useMemo, useState } from 'react';
 import {
   Check,
@@ -188,6 +190,7 @@ export function TurnResponse({
 }: TurnResponseProps) {
   const timeline = useMemo(() => buildTurnTimeline(events), [events]);
   const duration = useTurnClock(turn);
+  const warnings = events.filter((event) => event.type === 'runtime.warning' && typeof event.data.message === 'string');
   const terminalMessage = [...timeline]
     .reverse()
     .find((item) => item.kind === 'message');
@@ -198,13 +201,79 @@ export function TurnResponse({
   const canFold = settled && Boolean(terminalMessage) && foldedItems.length > 0;
   const visibleItems =
     canFold && terminalMessage ? [terminalMessage] : timeline;
-  const hasResponse = timeline.length > 0 || approvals.length > 0 || !settled;
+  const hasResponse = timeline.length > 0 || warnings.length > 0 || approvals.length > 0 || !settled;
 
+  if (turn.orchestration)
+    return (
+      <article className="orchestration-response" aria-label="Orchestration">
+        <strong>
+          {modelDisplayName({ id: turn.model ?? 'Lead', label: '' })} →{' '}
+          {modelDisplayName({ id: turn.orchestration.worker.model, label: '' })}
+        </strong>
+        {(['plan', 'work', 'review'] as const).map((phase) => {
+          const execution = turn.executions?.find(
+            (entry) => entry.phase === phase,
+          );
+          const title =
+            phase === 'plan'
+              ? 'Lead assignment'
+              : phase === 'work'
+                ? `${providerDisplayName(turn.orchestration!.worker.providerId)} implementation`
+                : 'Lead review';
+          const status = execution?.status ?? (settled ? 'Not run' : 'Waiting');
+          return (
+            <section
+              key={phase}
+              className="orchestration-phase"
+              data-status={status}
+            >
+              <div className="orchestration-phase-heading">
+                <span>{title}</span>
+                <output>{status}</output>
+              </div>
+              {execution && (
+                <details
+                  open={phase === 'review' || execution.status === 'running'}
+                >
+                  <summary>
+                    {modelDisplayName({ id: execution.model, label: '' })} ·
+                    View activity
+                  </summary>
+                  {execution.error && (
+                    <p className="attachment-warning">{execution.error}</p>
+                  )}
+                  <TurnResponse
+                    turn={{
+                      ...turn,
+                      orchestration: undefined,
+                      executions: undefined,
+                      status: execution.status,
+                      createdAt: execution.createdAt,
+                      completedAt: execution.completedAt,
+                    }}
+                    events={events.filter(
+                      (event) => event.data.executionId === execution.id,
+                    )}
+                    approvals={approvals.filter(
+                      (approval) => approval.executionId === execution.id,
+                    )}
+                    onDecision={onDecision}
+                  />
+                </details>
+              )}
+            </section>
+          );
+        })}
+      </article>
+    );
   if (!hasResponse) return null;
 
   return (
     <article className="agent-response">
       <div className="agent-body">
+        {warnings.map((event) => (
+          <output className="attachment-warning" key={event.sequence}>{String(event.data.message)}</output>
+        ))}
         {!settled && (
           <div className="working-duration">
             <LoaderCircle className="tool-spinner" />

@@ -14,7 +14,7 @@
     "build:all": "npm run build && npm run build:server",
     "start": "vite preview",
     "start:server": "NODE_ENV=production node --env-file-if-exists=.env --enable-source-maps dist-node/index.js",
-    "test": "node --import tsx --test server/*.test.ts server/core/*.test.ts server/http/*.test.ts server/security/*.test.ts server/providers/codex/*.test.ts server/providers/muse/*.test.ts server/providers/grok/*.test.ts",
+    "test": "node --import tsx --test server/*.test.ts server/core/*.test.ts server/http/*.test.ts server/security/*.test.ts server/speech/*.test.ts server/providers/codex/*.test.ts server/providers/muse/*.test.ts server/providers/grok/*.test.ts",
     "test:providers": "node --import tsx --test server/providers/codex/*.test.ts server/providers/muse/*.test.ts server/providers/grok/*.test.ts",
     "lint": "oxlint",
     "format": "oxfmt",

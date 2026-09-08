@@ -2,6 +2,8 @@ import Database from 'better-sqlite3';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type {
+  TurnExecution,
+  Orchestration,
   ApprovalDecision,
   ApprovalRequest,
   Project,
@@ -111,6 +113,30 @@ const migrations = [
     ALTER TABLE turns ADD COLUMN request_json TEXT;
   `,
   `ALTER TABLE turns ADD COLUMN permission_mode TEXT NOT NULL DEFAULT 'workspace' CHECK(permission_mode IN ('read-only', 'workspace', 'full-access'));`,
+  `ALTER TABLE turns ADD COLUMN orchestration_json TEXT;
+    CREATE TABLE turn_executions (
+      id TEXT PRIMARY KEY,
+      turn_id TEXT NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
+      phase TEXT NOT NULL CHECK(phase IN ('plan', 'work', 'review')),
+      payload_json TEXT NOT NULL,
+      UNIQUE(turn_id, phase)
+    );
+    CREATE TABLE approvals_v4 (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      turn_id TEXT NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
+      provider_request_id INTEGER NOT NULL,
+      method TEXT NOT NULL, summary TEXT NOT NULL, details_json TEXT NOT NULL,
+      status TEXT NOT NULL, decision TEXT, created_at TEXT NOT NULL, resolved_at TEXT,
+      execution_id TEXT REFERENCES turn_executions(id)
+    );
+    INSERT INTO approvals_v4 SELECT *, NULL FROM approvals;
+    DROP TABLE approvals;
+    ALTER TABLE approvals_v4 RENAME TO approvals;
+    CREATE INDEX approvals_task_status_idx ON approvals(task_id, status, created_at);
+    CREATE UNIQUE INDEX approvals_legacy_request_idx ON approvals(turn_id, provider_request_id) WHERE execution_id IS NULL;
+    CREATE UNIQUE INDEX approvals_execution_request_idx ON approvals(execution_id, provider_request_id) WHERE execution_id IS NOT NULL;
+  `,
 ] as const;
 
 type Row = Record<string, string | number | null>;
@@ -221,7 +247,11 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       project,
       nextSequence,
       hasMore: this.listEvents(id, nextSequence, 1).length > 0,
-      turns,
+      turns: turns.map((turn) =>
+        turn.orchestration
+          ? { ...turn, executions: this.listExecutions(turn.id) }
+          : turn,
+      ),
       events,
       approvals,
     };
@@ -274,8 +304,8 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     if (existing) return { turn: existing, created: false };
     this.#database
       .prepare(`
-      INSERT INTO turns (id, task_id, client_request_id, prompt, status, created_at, model, reasoning_effort, request_json, permission_mode)
-      VALUES (@id, @taskId, @clientRequestId, @prompt, 'queued', @now, @model, @reasoningEffort, @requestJson, @permissionMode)
+      INSERT INTO turns (id, task_id, client_request_id, prompt, status, created_at, model, reasoning_effort, request_json, permission_mode, orchestration_json)
+      VALUES (@id, @taskId, @clientRequestId, @prompt, 'queued', @now, @model, @reasoningEffort, @requestJson, @permissionMode, @orchestrationJson)
     `)
       .run({
         ...input,
@@ -283,6 +313,9 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
         reasoningEffort: input.reasoningEffort ?? null,
         requestJson: input.requestJson ?? null,
         permissionMode: input.permissionMode ?? 'workspace',
+        orchestrationJson: input.orchestration
+          ? JSON.stringify(input.orchestration)
+          : null,
       });
     return { turn: this.getTurn(input.id)!, created: true };
   }
@@ -330,6 +363,55 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       );
   }
 
+  createExecution(execution: TurnExecution): void {
+    this.#database
+      .prepare(
+        'INSERT INTO turn_executions (id, turn_id, phase, payload_json) VALUES (?, ?, ?, ?)',
+      )
+      .run(
+        execution.id,
+        execution.turnId,
+        execution.phase,
+        JSON.stringify(execution),
+      );
+  }
+
+  updateExecution(
+    id: string,
+    update: Partial<
+      Pick<
+        TurnExecution,
+        | 'status'
+        | 'providerThreadId'
+        | 'providerTurnId'
+        | 'result'
+        | 'error'
+        | 'completedAt'
+      >
+    >,
+  ): void {
+    const row = this.#database
+      .prepare('SELECT payload_json FROM turn_executions WHERE id = ?')
+      .get(id) as Row | undefined;
+    if (!row) throw new Error('Execution not found');
+    this.#database
+      .prepare('UPDATE turn_executions SET payload_json = ? WHERE id = ?')
+      .run(
+        JSON.stringify({ ...parseJsonObject(row.payload_json), ...update }),
+        id,
+      );
+  }
+
+  listExecutions(turnId: string): readonly TurnExecution[] {
+    return (
+      this.#database
+        .prepare(
+          "SELECT payload_json FROM turn_executions WHERE turn_id = ? ORDER BY CASE phase WHEN 'plan' THEN 0 WHEN 'work' THEN 1 ELSE 2 END",
+        )
+        .all(turnId) as Row[]
+    ).map((row) => JSON.parse(String(row.payload_json)) as TurnExecution);
+  }
+
   appendEvent(input: AppendEventInput): TaskEvent {
     const result = this.#database
       .prepare(`
@@ -372,10 +454,14 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     this.#database
       .prepare(`
       INSERT INTO approvals (
-        id, task_id, turn_id, provider_request_id, method, summary, details_json, status, created_at
-      ) VALUES (@id, @taskId, @turnId, @providerRequestId, @method, @summary, @details, 'pending', @now)
+        id, task_id, turn_id, provider_request_id, method, summary, details_json, status, created_at, execution_id
+      ) VALUES (@id, @taskId, @turnId, @providerRequestId, @method, @summary, @details, 'pending', @now, @executionId)
     `)
-      .run({ ...input, details: JSON.stringify(input.details) });
+      .run({
+        ...input,
+        executionId: input.executionId ?? null,
+        details: JSON.stringify(input.details),
+      });
     return this.getApproval(input.id)!;
   }
 
@@ -431,6 +517,27 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
         VALUES (?, ?, 'turn.status', ?, ?)
       `);
       for (const turn of turns) {
+        for (const execution of this.listExecutions(turn.id)) {
+          if (execution.status !== 'running' && execution.status !== 'queued')
+            continue;
+          this.updateExecution(execution.id, {
+            status: 'failed',
+            error: 'Server restarted before the execution completed',
+            completedAt: now,
+          });
+          this.appendEvent({
+            taskId: turn.task_id,
+            turnId: turn.id,
+            type: 'execution.status',
+            data: {
+              executionId: execution.id,
+              phase: execution.phase,
+              providerId: execution.providerId,
+              status: 'failed',
+            },
+            now,
+          });
+        }
         append.run(
           turn.task_id,
           turn.id,
@@ -510,6 +617,13 @@ function taskFromRow(row: Row): Task {
 
 function turnFromRow(row: Row): Turn {
   return {
+    ...(row.orchestration_json
+      ? {
+          orchestration: JSON.parse(
+            String(row.orchestration_json),
+          ) as Orchestration,
+        }
+      : {}),
     permissionMode:
       row.permission_mode as import('../../lib/workspace/permissions.ts').PermissionMode,
     id: String(row.id),
@@ -544,6 +658,7 @@ function eventFromRow(row: Row): TaskEvent {
 
 function approvalFromRow(row: Row): ApprovalRequest {
   return {
+    ...(row.execution_id ? { executionId: String(row.execution_id) } : {}),
     id: String(row.id),
     taskId: String(row.task_id),
     turnId: String(row.turn_id),

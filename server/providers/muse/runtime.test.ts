@@ -69,6 +69,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     return;
   }
   if (m.method === 'model/list') {
+    if (mode === 'model-hang') return;
     send({
       jsonrpc: '2.0',
       id: m.id,
@@ -125,6 +126,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
       id: m.id,
       result: { commandId: m.params.commandId, status: 'accepted', turnId: m.params.turnId },
     });
+    if (mode === 'interrupt-ack-only') return;
     send({
       jsonrpc: '2.0',
       method: 'turn/completed',
@@ -139,6 +141,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     return;
   }
   if (m.method === 'userInput/cancel') {
+    if (mode === 'user-input-hang') return;
     send({
       jsonrpc: '2.0',
       id: m.id,
@@ -185,7 +188,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
         turnId,
       },
     });
-    if (mode === 'silent-turn') return;
+    if (mode === 'silent-turn' || mode === 'interrupt-ack-only') return;
     send({
       jsonrpc: '2.0',
       method: 'turn/started',
@@ -197,7 +200,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
         sourceRange: sourceRange(),
       },
     });
-    if (mode === 'user-input') {
+    if (mode === 'user-input' || mode === 'user-input-hang') {
       send({
         jsonrpc: '2.0',
         method: 'userInput/requested',
@@ -638,4 +641,43 @@ void test('interrupts a running Muse turn and rejects work after close', async (
     ),
     /closed/,
   );
+});
+
+void test('fails promptly when Muse never acknowledges an unsupported question', { timeout: 10_000 }, async (context) => {
+  const options = await fixture(context, 'user-input-hang');
+  const runtime = new MuseTurnRuntime({ ...options, timeoutMs: 500 });
+  context.after(() => runtime.close());
+  const result = await runtime.executeTurn(
+    { taskId: 'question', cwd: options.cwd, prompt: 'hello' },
+    handlers(),
+  );
+  assert.equal(result.status, 'failed');
+  assert.match(result.error ?? '', /could not dismiss an unsupported question/);
+});
+
+void test('bounds startup after a successful handshake', { timeout: 10_000 }, async (context) => {
+  const options = await fixture(context, 'model-hang');
+  const runtime = new MuseTurnRuntime({ ...options, timeoutMs: 500 });
+  context.after(() => runtime.close());
+  const result = await runtime.executeTurn(
+    { taskId: 'startup', cwd: options.cwd, prompt: 'hello', model: 'muse-spark-1.3' },
+    handlers(),
+  );
+  assert.equal(result.status, 'failed');
+  assert.match(result.error ?? '', /startup timed out/);
+});
+
+void test('Stop settles even when Muse acknowledges without completing', { timeout: 10_000 }, async (context) => {
+  const options = await fixture(context, 'interrupt-ack-only');
+  const runtime = new MuseTurnRuntime(options);
+  context.after(() => runtime.close());
+  let started!: () => void;
+  const ready = new Promise<void>((resolve) => { started = resolve; });
+  const job = runtime.executeTurn(
+    { taskId: 'stop', cwd: options.cwd, prompt: 'hello' },
+    handlers({ onProviderTurn: started }),
+  );
+  await ready;
+  await runtime.interrupt('stop');
+  assert.equal((await job).status, 'interrupted');
 });

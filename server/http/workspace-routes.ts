@@ -1,3 +1,4 @@
+import { orchestrationSchema } from '../../lib/workspace/orchestration.ts';
 import { permissionModes } from '../../lib/workspace/permissions.ts';
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
@@ -31,6 +32,7 @@ const detailQuery = z.object({
 const params = z.object({ taskId: id });
 const approvalParams = z.object({ approvalId: id });
 const turnBody = z.object({
+  orchestration: orchestrationSchema.optional(),
   permissionMode: z.enum(permissionModes).optional(),
   attachmentIds: z.array(id).max(8).optional(),
   clientRequestId: id,

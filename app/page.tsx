@@ -47,7 +47,15 @@ import { ProviderLogo } from '@/components/provider-logo';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 
-import { Textarea } from '@/components/ui/textarea';
+import { SpeechInput } from '@/components/conversation/speech-input';
+import { OrchestrationComposer } from '@/components/conversation/orchestration-composer';
+import { OrchestrationSelect } from '@/components/conversation/orchestration-select';
+import { orchestrationSchema } from '@/lib/workspace/orchestration';
+import {
+  bindingMatches,
+  loadPushToTalk,
+} from '@/lib/speech/push-to-talk';
+import type { Orchestration } from '@/lib/workspace/contracts';
 import { Input } from '@/components/ui/input';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { TurnResponse } from '@/components/conversation/turn-response';
@@ -68,6 +76,7 @@ interface PendingSend {
   taskId: string;
   projectId: string;
   input: {
+    orchestration?: Orchestration;
     attachmentIds?: string[];
     clientRequestId: string;
     prompt: string;
@@ -89,6 +98,21 @@ const timeLabel = (value: string) => {
 };
 const eventText = (event: TaskEvent) =>
   typeof event.data.text === 'string' ? event.data.text : '';
+const applyLiveTranscript = (current: string, prev: string, next: string) => {
+  let base = current;
+  if (prev) {
+    if (current.endsWith(prev)) base = current.slice(0, current.length - prev.length);
+    else {
+      const index = current.lastIndexOf(prev);
+      if (index >= 0)
+        base = current.slice(0, index) + current.slice(index + prev.length);
+    }
+    base = base.trimEnd();
+  }
+  const live = next.trim();
+  if (!live) return base;
+  return base ? `${base} ${live}` : live;
+};
 const displayText = (value: unknown, fallback = '') =>
   typeof value === 'string' ? value : fallback;
 function Mark() {
@@ -184,6 +208,13 @@ export default function Home() {
     );
   const [requestedReasoning, setReasoning] = useState('');
   const [prompt, setPrompt] = useState('');
+  const [dictating, setDictating] = useState(false);
+  const wasDictating = useRef(false);
+  useEffect(() => {
+    if (wasDictating.current && !dictating) messageInput.current?.focus();
+    wasDictating.current = dictating;
+  }, [dictating]);
+  const [orchestration, setOrchestration] = useState<Orchestration>();
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [uploading, setUploading] = useState(false);
   const [attachmentReset, setAttachmentReset] = useState(0);
@@ -268,8 +299,7 @@ export default function Home() {
     };
     const onScroll = () => {
       stickToBottom.current =
-        viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <
-        96;
+        viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 96;
     };
     viewport.addEventListener('scroll', onScroll, { passive: true });
     const observer = new ResizeObserver(stick);
@@ -303,6 +333,7 @@ export default function Home() {
       setHasPendingSend(false);
       setAttachmentReset((value) => value + 1);
       setAttachments([]);
+      setOrchestration(undefined);
       setPrompt((current) => (current === pending.input.prompt ? '' : current));
     }
   }
@@ -315,7 +346,9 @@ export default function Home() {
         typeof pending.taskId !== 'string' ||
         typeof pending.projectId !== 'string' ||
         typeof pending.input?.clientRequestId !== 'string' ||
-        typeof pending.input.prompt !== 'string'
+        typeof pending.input.prompt !== 'string' ||
+        (pending.input.orchestration !== undefined &&
+          !orchestrationSchema.safeParse(pending.input.orchestration).success)
       )
         return;
       pendingSend.current = pending;
@@ -325,6 +358,9 @@ export default function Home() {
       setActiveTaskId(pending.taskId);
       setPermissionMode(pending.input.permissionMode ?? 'workspace');
       setPrompt(pending.input.prompt);
+      setOrchestration(pending.input.orchestration);
+      setModel(pending.input.model ?? '');
+      setReasoning(pending.input.reasoningEffort ?? '');
     } catch {
       /* An unavailable draft store must not block reading the workspace. */
     }
@@ -418,11 +454,29 @@ export default function Home() {
   const activeTask =
     detail?.task ?? tasks.find((entry) => entry.id === activeTaskId);
 
+  const workerProvider = providers.find(
+    (entry) => entry.providerId === orchestration?.worker.providerId,
+  );
+  const workerModel = workerProvider?.models.find(
+    (entry) => entry.id === orchestration?.worker.model,
+  );
+  const orchestrationUnavailable = Boolean(
+    orchestration &&
+    (activeProvider?.health !== 'ready' ||
+      workerProvider?.health !== 'ready' ||
+      !workerModel),
+  );
   const incompatibleImages =
     attachments.some((a) => a.mime.startsWith('image/')) &&
     !activeProvider?.models
       .find((m) => m.id === model)
       ?.inputModalities?.includes('image');
+
+  const incompatibleWorkerImages = Boolean(
+    orchestration &&
+    attachments.some((a) => a.mime.startsWith('image/')) &&
+    !workerModel?.inputModalities?.includes('image'),
+  );
 
   async function archiveTask(task: Task) {
     setArchiveBusy(task.id);
@@ -448,10 +502,14 @@ export default function Home() {
   const visibleTasks = tasks.filter((task) =>
     task.title.toLowerCase().includes(taskSearch.toLowerCase()),
   );
-  async function send() {
+  const send = async (): Promise<void> => {
     if (
       !projectId ||
-      incompatibleImages ||
+      ((incompatibleImages ||
+        incompatibleWorkerImages ||
+        orchestrationUnavailable) &&
+        !pendingSend.current) ||
+      activeTask?.status === 'running' ||
       sending.current ||
       uploading ||
       (!prompt.trim() && !attachments.length && !pendingSend.current)
@@ -479,6 +537,7 @@ export default function Home() {
           taskId,
           projectId,
           input: {
+            orchestration,
             clientRequestId: crypto.randomUUID(),
             permissionMode,
             attachmentIds: attachments.map((a) => a.id),
@@ -508,6 +567,7 @@ export default function Home() {
       pendingSend.current = undefined;
       setHasPendingSend(false);
       setPrompt('');
+      setOrchestration(undefined);
       setAttachmentReset((value) => value + 1);
       setAttachments([]);
       setSyncVersion((value) => value + 1);
@@ -525,7 +585,37 @@ export default function Home() {
       sending.current = false;
       setBusy(false);
     }
-  }
+  };
+  const sendRef = useRef(send);
+  useEffect(() => {
+    sendRef.current = send;
+  });
+  useEffect(() => {
+    if (!dictating) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.repeat || event.isComposing || event.key !== 'Enter') return;
+      if (event.shiftKey || event.ctrlKey || event.altKey || event.metaKey)
+        return;
+      const target = event.target;
+      if (target instanceof HTMLElement) {
+        const tag = target.tagName;
+        if (
+          target.isContentEditable ||
+          tag === 'INPUT' ||
+          tag === 'TEXTAREA' ||
+          tag === 'SELECT' ||
+          tag === 'BUTTON'
+        )
+          return;
+      }
+      const pttBinding = loadPushToTalk().binding;
+      if (pttBinding && bindingMatches(pttBinding, event)) return;
+      event.preventDefault();
+      void sendRef.current();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [dictating]);
   async function handoff(nextProvider: string, nextModel?: string) {
     if (
       !projectId ||
@@ -559,6 +649,7 @@ export default function Home() {
         model: nextModel,
       });
       stickToBottom.current = true;
+      setOrchestration(undefined);
       setProviderId(nextProvider);
       setModel(nextModel ?? '');
       setReasoning('');
@@ -679,6 +770,7 @@ export default function Home() {
     }
   }
   function newTask() {
+    setOrchestration(undefined);
     setTaskSearch('');
     setSearchOpen(false);
     setActiveTaskId('');
@@ -879,6 +971,7 @@ export default function Home() {
                             setDetail(undefined);
                             setActiveTaskId(task.id);
                             setProjectId(task.projectId);
+                            setOrchestration(undefined);
                             setPermissionMode('workspace');
                             setProviderId(task.providerId);
                             setModel(task.model ?? '');
@@ -1191,6 +1284,10 @@ export default function Home() {
               </span>
             )}
             <div className="composer-context-aside">
+              <OrchestrationSelect
+                orchestration={orchestration}
+                providers={providers}
+              />
               {activeProject?.branch && (
                 <span
                   className="composer-branch"
@@ -1215,12 +1312,13 @@ export default function Home() {
                 setUploading(waiting);
               }}
             >
-              {incompatibleImages && (
+              {(incompatibleImages || incompatibleWorkerImages) && (
                 <p className="attachment-warning" role="alert">
-                  Choose a model with image support to send these images.
+                  Choose lead and worker models with image support to send these
+                  images.
                 </p>
               )}
-              <div className="composer-prompt-row">
+              <div className={dictating ? 'composer-prompt-row is-dictating' : 'composer-prompt-row'}>
                 <Button
                   type="button"
                   variant="ghost"
@@ -1240,27 +1338,27 @@ export default function Home() {
                 >
                   <Paperclip size={17} />
                 </Button>
-                <Textarea
-                  ref={messageInput}
-                  aria-label="Message"
-                  value={prompt}
-                  onChange={(event) => setPrompt(event.target.value)}
-                  placeholder={
-                    !projectId ? 'Add a project to begin…' : 'Ask for a change…'
+                <OrchestrationComposer
+                  key={activeTaskId || 'new'}
+                  inputRef={messageInput}
+                  prompt={prompt}
+                  onPrompt={setPrompt}
+                  orchestration={orchestration}
+                  onOrchestration={setOrchestration}
+                  providers={providers}
+                  leadLabel={
+                    modelOptions.find((entry) => entry.id === model)?.label ??
+                    model
                   }
-                  disabled={!projectId || hasPendingSend}
-                  onKeyDown={(event) => {
-                    if (
-                      event.key === 'Enter' &&
-                      !event.shiftKey &&
-                      !event.nativeEvent.isComposing
-                    ) {
-                      event.preventDefault();
-                      void send();
-                    }
-                  }}
+                  disabled={
+                    !projectId ||
+                    hasPendingSend ||
+                    activeTask?.status === 'running'
+                  }
+                  onSend={() => void send()}
                 />
                 <div className="composer-send-tools">
+                  <SpeechInput key={`${activeTaskId || projectId || 'new'}:${hasPendingSend || activeTask?.status === 'running'}`} api={api} disabled={!projectId || hasPendingSend || activeTask?.status === 'running'} onInsert={(text) => setPrompt(current => current ? `${current} ${text}` : text)} onLiveTranscript={(next, prev) => setPrompt(current => applyLiveTranscript(current, prev, next))} onActiveChange={setDictating} />
                   <Button
                     className="send-button disabled:opacity-100"
                     aria-label={
@@ -1282,7 +1380,10 @@ export default function Home() {
                         !attachments.length &&
                         !hasPendingSend) ||
                       uploading ||
-                      incompatibleImages ||
+                      ((incompatibleImages ||
+                        incompatibleWorkerImages ||
+                        orchestrationUnavailable) &&
+                        !hasPendingSend) ||
                       !projectId ||
                       busy ||
                       activeTask?.status === 'running'
@@ -1312,7 +1413,7 @@ export default function Home() {
                 effort={reasoning}
                 effortCapability={effortCapability}
                 providerLocked={!!activeTaskId}
-                disabled={busy || hasPendingSend}
+                disabled={!projectId || busy || hasPendingSend}
                 onModel={(provider, nextModel) => {
                   setProviderId(provider);
                   setModel(nextModel);
@@ -1322,13 +1423,8 @@ export default function Home() {
                 onPermissionMode={setPermissionMode}
               />
             </div>
-            <UsageLimits
-              key={providerId}
-              api={api}
-              providerId={providerId}
-            />
+            <UsageLimits key={providerId} api={api} providerId={providerId} />
           </div>
-
         </div>
         <TerminalPanel
           key={projectId}

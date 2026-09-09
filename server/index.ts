@@ -136,6 +136,9 @@ const agents: AgentService = new AgentService(
       binaryPath: config.muse.binaryPath,
       museHome: config.muse.museHome,
       timeoutMs: config.providerProbeTimeoutMs,
+      idleTimeoutMs: config.muse.idleTimeoutMs,
+      turnTimeoutMs: config.muse.turnTimeoutMs,
+      approvalTimeoutMs: config.muse.approvalTimeoutMs,
     }),
     new GrokTurnRuntime({
       binaryPath: config.grok.binaryPath,

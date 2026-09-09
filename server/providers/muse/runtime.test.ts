@@ -686,3 +686,33 @@ void test('Stop settles even when Muse acknowledges without completing', { timeo
   await runtime.interrupt('stop');
   assert.equal((await job).status, 'interrupted');
 });
+
+void test('unanswered approvals fail instead of holding the turn forever', { timeout: 10_000 }, async (context) => {
+  const options = await fixture(context, 'approval');
+  const runtime = new MuseTurnRuntime({ ...options, approvalTimeoutMs: 300 });
+  context.after(() => runtime.close());
+  const result = await runtime.executeTurn(
+    { taskId: 'approval-stall', cwd: options.cwd, prompt: 'hello' },
+    handlers({
+      requestApproval: () => new Promise<never>(() => {}),
+    }),
+  );
+  assert.equal(result.status, 'failed');
+  assert.match(result.error ?? '', /approval timed out/);
+});
+
+void test('absolute turn timeout caps a trickling host', { timeout: 10_000 }, async (context) => {
+  const options = await fixture(context, 'silent-turn');
+  const runtime = new MuseTurnRuntime({
+    ...options,
+    idleTimeoutMs: 60_000,
+    turnTimeoutMs: 300,
+  });
+  context.after(() => runtime.close());
+  const result = await runtime.executeTurn(
+    { taskId: 'absolute-cap', cwd: options.cwd, prompt: 'hello' },
+    handlers(),
+  );
+  assert.equal(result.status, 'failed');
+  assert.match(result.error ?? '', /time limit/);
+});

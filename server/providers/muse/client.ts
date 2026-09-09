@@ -12,6 +12,8 @@ export interface MuseOptions {
   museHome?: string;
   timeoutMs?: number;
   idleTimeoutMs?: number;
+  turnTimeoutMs?: number;
+  approvalTimeoutMs?: number;
   shutdownTimeoutMs?: number;
   durable?: boolean;
   environment?: NodeJS.ProcessEnv;
@@ -104,9 +106,14 @@ export async function openMuse(
   }
   combined.addEventListener('abort', close, { once: true });
   try {
-    const host = await handshake.initialize({
-      clientInfo: { name: 'webcode', version: '0.1.0' },
-    });
+    // Abortable so Stop during the spawn settles promptly instead of waiting
+    // out the shutdown ladder for a host that never answers the handshake.
+    const host = await abortable(
+      handshake.initialize({
+        clientInfo: { name: 'webcode', version: '0.1.0' },
+      }),
+      combined,
+    );
     combined.throwIfAborted();
     const client = new MuseClient(host.connection, {
       host,

@@ -40,6 +40,24 @@ const environmentSchema = z
       .min(1_000)
       .max(60_000)
       .default(20_000),
+    WEBCODE_MUSE_IDLE_TIMEOUT_MS: z.coerce
+      .number()
+      .int()
+      .min(30_000)
+      .max(30 * 60_000)
+      .default(10 * 60_000),
+    WEBCODE_MUSE_TURN_TIMEOUT_MS: z.coerce
+      .number()
+      .int()
+      .min(60_000)
+      .max(4 * 60 * 60_000)
+      .default(60 * 60_000),
+    WEBCODE_MUSE_APPROVAL_TIMEOUT_MS: z.coerce
+      .number()
+      .int()
+      .min(30_000)
+      .max(60 * 60_000)
+      .default(15 * 60_000),
     WEBCODE_WS_TICKET_TTL_MS: z.coerce
       .number()
       .int()
@@ -101,6 +119,9 @@ export interface ServerConfig {
   muse: {
     binaryPath: string;
     museHome?: string;
+    idleTimeoutMs?: number;
+    turnTimeoutMs?: number;
+    approvalTimeoutMs?: number;
   };
   grok: {
     binaryPath: string;
@@ -166,6 +187,9 @@ export function loadConfig(
     muse: {
       binaryPath: environment.MUSE_BIN,
       ...(environment.MUSE_HOME ? { museHome: environment.MUSE_HOME } : {}),
+      idleTimeoutMs: environment.WEBCODE_MUSE_IDLE_TIMEOUT_MS,
+      turnTimeoutMs: environment.WEBCODE_MUSE_TURN_TIMEOUT_MS,
+      approvalTimeoutMs: environment.WEBCODE_MUSE_APPROVAL_TIMEOUT_MS,
     },
     grok: {
       binaryPath: environment.GROK_BIN,

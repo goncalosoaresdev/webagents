@@ -215,6 +215,8 @@ export class MuseTurnRuntime implements AgentRuntime {
   readonly permissionModes = ['read-only', 'workspace', 'full-access'] as const;
   readonly #options: MuseOptions;
   readonly #idleTimeoutMs: number;
+  readonly #turnTimeoutMs: number;
+  readonly #approvalTimeoutMs: number;
   readonly #open: typeof openMuse;
   readonly #active = new Map<string, ActiveTurn>();
   readonly #jobs = new Set<Promise<ExecuteTurnResult>>();
@@ -223,7 +225,9 @@ export class MuseTurnRuntime implements AgentRuntime {
 
   constructor(options: MuseOptions = {}, open: typeof openMuse = openMuse) {
     this.#options = options;
-    this.#idleTimeoutMs = options.idleTimeoutMs ?? 30 * 60_000;
+    this.#idleTimeoutMs = options.idleTimeoutMs ?? 10 * 60_000;
+    this.#turnTimeoutMs = options.turnTimeoutMs ?? 60 * 60_000;
+    this.#approvalTimeoutMs = options.approvalTimeoutMs ?? 15 * 60_000;
     this.#open = open;
   }
 
@@ -264,26 +268,46 @@ export class MuseTurnRuntime implements AgentRuntime {
     const resetWatchdog = () => {
       clearTimeout(idleTimer);
       clearTimeout(warningTimer);
-      if (!waitingForApproval) {
+      // Approval waits get their own bound instead of disabling the watchdog:
+      // an unanswered approval used to hold the turn (and its host) forever.
+      const boundMs = waitingForApproval
+        ? this.#approvalTimeoutMs
+        : this.#idleTimeoutMs;
+      const idleError = waitingForApproval
+        ? new Error(
+            'Muse approval timed out waiting for a decision. The task was stopped; no prompt was replayed.',
+          )
+        : new Error('Muse stopped responding');
+      const warningDelayMs = Math.min(60_000, Math.floor(boundMs / 2));
+      if (warningDelayMs < boundMs && !waitingForApproval) {
         warningTimer = setTimeout(() => {
           handlers.onEvent({
             type: 'runtime.warning',
-            data: { message: 'Muse has sent no activity for a minute. It may still be working or waiting on a tool. You can stop this task if it remains unresponsive.' },
+            data: {
+              message:
+                'Muse has sent no activity for a minute. It may still be working or waiting on a tool. You can stop this task if it remains unresponsive.',
+            },
           });
-        }, 60_000);
+        }, warningDelayMs);
         warningTimer.unref?.();
-        idleTimer = setTimeout(
-          () => state.controller.abort(new Error('Muse stopped responding')),
-          this.#idleTimeoutMs,
-        );
-        idleTimer.unref?.();
       }
+      idleTimer = setTimeout(() => state.controller.abort(idleError), boundMs);
+      idleTimer.unref?.();
     };
     resetWatchdog();
     const startupTimer = setTimeout(() => {
       state.controller.abort(new Error('Muse startup timed out while opening the session or starting the turn. No prompt was replayed.'));
     }, this.#options.timeoutMs ?? 60_000);
     startupTimer.unref?.();
+    // Absolute cap: a trickling host must not extend a turn indefinitely.
+    const absoluteTimer = setTimeout(() => {
+      state.controller.abort(
+        new Error(
+          'Muse turn exceeded its time limit. The task was stopped; rerun with a narrower prompt to continue.',
+        ),
+      );
+    }, this.#turnTimeoutMs);
+    absoluteTimer.unref?.();
     const stop = () => {
       void state.host?.client.close().catch(() => undefined);
     };
@@ -442,6 +466,16 @@ export class MuseTurnRuntime implements AgentRuntime {
         });
       };
       emitContext();
+      // Context/token frames arrive outside the item/delta iterators, so poll
+      // for them: server-side-only progress must also reset the watchdog,
+      // otherwise a working turn looks idle and gets killed.
+      const contextPoller = setInterval(() => {
+        if (combined.aborted) return;
+        const before = lastContext;
+        emitContext();
+        if (lastContext !== before) resetWatchdog();
+      }, 5_000);
+      contextPoller.unref?.();
       const kinds = new Map<string, string>();
       const streamed = new Map<string, number>();
       const queuedDeltas = new Map<
@@ -526,6 +560,7 @@ export class MuseTurnRuntime implements AgentRuntime {
         emitContext();
         return turnOutcome(outcome);
       } finally {
+        clearInterval(contextPoller);
         prompts.abort();
         await promptWatch;
       }
@@ -539,7 +574,7 @@ export class MuseTurnRuntime implements AgentRuntime {
       const abortMessage =
         abortReason instanceof Error ? abortReason.message : '';
       if (
-        /startup timed out|stopped responding|could not restore its event stream|could not apply the approval/i.test(
+        /startup timed out|stopped responding|approval timed out|exceeded its time limit|could not restore its event stream|could not apply the approval/i.test(
           abortMessage,
         )
       ) {
@@ -553,6 +588,7 @@ export class MuseTurnRuntime implements AgentRuntime {
       clearTimeout(idleTimer);
       clearTimeout(warningTimer);
       clearTimeout(startupTimer);
+      clearTimeout(absoluteTimer);
       combined.removeEventListener('abort', stop);
       for (const id of pending) handlers.withdrawApproval?.(id);
       await state.host?.client.close().catch(() => undefined);

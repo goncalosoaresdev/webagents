@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { AudioLines, ChevronDown } from 'lucide-react';
 import type { WebcodeApi } from '@/lib/api/client';
 import type {
@@ -19,10 +19,43 @@ export function SpeechSettings({ api }: { api: WebcodeApi }) {
   const [busy, setBusy] = useState(false);
   const [ptt, setPtt] = useState<PushToTalkConfig>(loadPushToTalk);
   const [capturing, setCapturing] = useState(false);
+  const captureButtonRef = useRef<HTMLButtonElement | null>(null);
   function savePtt(next: PushToTalkConfig) {
     setPtt(next);
     savePushToTalk(next);
   }
+  useEffect(() => {
+    if (!capturing) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.key === 'Escape') {
+        setCapturing(false);
+        return;
+      }
+      const binding = bindingFromEvent(event);
+      if (!binding) return;
+      setPtt((current) => {
+        const next = { ...current, binding, enabled: true };
+        savePushToTalk(next);
+        return next;
+      });
+      setCapturing(false);
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      if (
+        event.target instanceof Node &&
+        !captureButtonRef.current?.contains(event.target)
+      )
+        setCapturing(false);
+    };
+    window.addEventListener('keydown', onKeyDown, true);
+    window.addEventListener('pointerdown', onPointerDown);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown, true);
+      window.removeEventListener('pointerdown', onPointerDown);
+    };
+  }, [capturing]);
   useEffect(() => {
     let cancelled = false;
     api
@@ -157,21 +190,8 @@ export function SpeechSettings({ api }: { api: WebcodeApi }) {
           <button
             type="button"
             className="ptt-key"
+            ref={captureButtonRef}
             onClick={() => setCapturing((value) => !value)}
-            onKeyDown={(event) => {
-              if (!capturing) return;
-              event.preventDefault();
-              event.stopPropagation();
-              if (event.key === 'Escape') {
-                setCapturing(false);
-                return;
-              }
-              const binding = bindingFromEvent(event.nativeEvent);
-              if (!binding) return;
-              savePtt({ ...ptt, binding, enabled: true });
-              setCapturing(false);
-            }}
-            onBlur={() => setCapturing(false)}
           >
             {capturing
               ? 'Press keys… (Esc to cancel)'

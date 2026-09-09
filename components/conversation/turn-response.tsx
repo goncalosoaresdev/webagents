@@ -11,7 +11,7 @@ import {
   Terminal,
 } from 'lucide-react';
 import { ResponseMarkdown } from './response-markdown';
-import { Button } from '@/components/ui/button';
+import { ApprovalCard } from './approval-card';
 import {
   buildTurnTimeline,
   formatWorkDuration,
@@ -29,7 +29,7 @@ interface TurnResponseProps {
   turn: Turn;
   events: readonly TaskEvent[];
   approvals: readonly ApprovalRequest[];
-  onDecision: (approvalId: string, decision: ApprovalDecision) => void;
+  onDecision: (approvalId: string, decision: ApprovalDecision) => void | Promise<void>;
 }
 
 type RenderItem =
@@ -328,21 +328,7 @@ export function TurnResponse({
           <p className="agent-note">Starting…</p>
         )}
         {approvals.map((approval) => (
-          <div className="approval-card" key={approval.id}>
-            <strong>Approval required</strong>
-            <p>{approval.summary}</p>
-            <div>
-              <Button
-                variant="outline"
-                onClick={() => onDecision(approval.id, 'decline')}
-              >
-                Decline
-              </Button>
-              <Button onClick={() => onDecision(approval.id, 'accept')}>
-                Allow once
-              </Button>
-            </div>
-          </div>
+          <ApprovalCard key={approval.id} approval={approval} onDecision={onDecision} />
         ))}
       </div>
     </article>

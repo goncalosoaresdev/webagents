@@ -10,10 +10,10 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import Markdown from 'react-markdown';
+import Markdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Check, Copy } from 'lucide-react';
-import { completeWordPrefix } from '../../lib/workspace/streaming-text';
+import { advanceText, revealBudget } from '../../lib/workspace/streaming-text';
 import { Button } from '../ui/button';
 
 function CodeBlock({ children }: { children?: ReactNode }) {
@@ -73,26 +73,99 @@ function CodeBlock({ children }: { children?: ReactNode }) {
   );
 }
 
-/** Batch token bursts and briefly hold incomplete words, flushing on completion or a pause. */
+/** Animate the presentation only; persisted provider text stays exact. */
 function useStreamingText(text: string, streaming: boolean) {
-  const [visible, setVisible] = useState(() => streaming ? completeWordPrefix(text) : text);
-  const latest = useRef(text);
-  const changedAt = useRef(0);
+  const [visible, setVisible] = useState(() => (streaming ? '' : text));
+  const state = useRef({
+    target: text,
+    visible: streaming ? '' : text,
+    budget: 0,
+    frame: 0,
+    last: 0,
+  });
   useEffect(() => {
-    latest.current = text;
-    changedAt.current = Date.now();
-  }, [text]);
-  useEffect(() => {
-    if (!streaming) return;
-    const timer = window.setInterval(() => {
-      setVisible(Date.now() - changedAt.current >= 180
-        ? latest.current : completeWordPrefix(latest.current));
-    }, 60);
-    return () => window.clearInterval(timer);
-  }, [streaming]);
-  // Completions and corrections must never leave stale or truncated text on screen.
+    const current = state.current;
+    current.target = text;
+    const motion = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const flush = () => {
+      cancelAnimationFrame(current.frame);
+      current.frame = 0;
+      current.budget = 0;
+      current.visible = current.target;
+      setVisible(current.visible);
+    };
+    const tick = (now: number) => {
+      const pending = current.target.length - current.visible.length;
+      current.budget += revealBudget(pending, now - current.last);
+      current.last = now;
+      if (current.budget >= 1) {
+        const end = advanceText(
+          current.target,
+          current.visible.length,
+          Math.floor(current.budget),
+        );
+        current.budget = Math.max(
+          0,
+          current.budget - (end - current.visible.length),
+        );
+        current.visible = current.target.slice(0, end);
+        setVisible(current.visible);
+      }
+      current.frame =
+        current.visible === current.target ? 0 : requestAnimationFrame(tick);
+      if (!current.frame) current.budget = 0;
+    };
+    if (!streaming || motion.matches || !text.startsWith(current.visible))
+      flush();
+    else if (!current.frame && current.visible !== text) {
+      current.last = performance.now();
+      current.frame = requestAnimationFrame(tick);
+    }
+    const onMotionChange = () => {
+      if (motion.matches) flush();
+    };
+    motion.addEventListener('change', onMotionChange);
+    return () => motion.removeEventListener('change', onMotionChange);
+  }, [text, streaming]);
+  useEffect(
+    () => () => {
+      cancelAnimationFrame(state.current.frame);
+      state.current.frame = 0;
+    },
+    [],
+  );
   return !streaming || !text.startsWith(visible) ? text : visible;
 }
+
+const markdownPlugins = [remarkGfm];
+const markdownComponents: Components = {
+  pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
+  table: ({ children }) => (
+    <section
+      className="response-table"
+      tabIndex={0}
+      aria-label="Response table"
+    >
+      <table>{children}</table>
+    </section>
+  ),
+  a: ({ children, href }) =>
+    href ? (
+      <a href={href} target="_blank" rel="noopener noreferrer">
+        {children}
+      </a>
+    ) : (
+      <span>{children}</span>
+    ),
+  img: ({ alt, src }) =>
+    typeof src === 'string' ? (
+      <a href={src} target="_blank" rel="noopener noreferrer">
+        {alt || 'View image'}
+      </a>
+    ) : (
+      <span>{alt}</span>
+    ),
+};
 
 /** Parse Markdown as React elements; provider output never becomes raw HTML. */
 export const ResponseMarkdown = memo(function ResponseMarkdown({
@@ -103,41 +176,18 @@ export const ResponseMarkdown = memo(function ResponseMarkdown({
   streaming?: boolean;
 }) {
   const displayedText = useStreamingText(text, streaming);
+  return <MarkdownBody text={displayedText} />;
+});
+
+const MarkdownBody = memo(function MarkdownBody({ text }: { text: string }) {
   return (
     <div className="response-prose">
       <Markdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={markdownPlugins}
         skipHtml
-        components={{
-          pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
-          table: ({ children }) => (
-            <section
-              className="response-table"
-              tabIndex={0}
-              aria-label="Response table"
-            >
-              <table>{children}</table>
-            </section>
-          ),
-          a: ({ children, href }) =>
-            href ? (
-              <a href={href} target="_blank" rel="noopener noreferrer">
-                {children}
-              </a>
-            ) : (
-              <span>{children}</span>
-            ),
-          img: ({ alt, src }) =>
-            typeof src === 'string' ? (
-              <a href={src} target="_blank" rel="noopener noreferrer">
-                {alt || 'View image'}
-              </a>
-            ) : (
-              <span>{alt}</span>
-            ),
-        }}
+        components={markdownComponents}
       >
-        {displayedText}
+        {text}
       </Markdown>
     </div>
   );

@@ -762,13 +762,9 @@ export default function Home() {
     setError('');
   }
   async function decide(id: string, decision: ApprovalDecision) {
-    if (!api) return;
-    try {
-      await api.decide(id, decision);
-      setSyncVersion((value) => value + 1);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Approval failed.');
-    }
+    if (!api) throw new Error('Connection unavailable. Please try again.');
+    await api.decide(id, decision);
+    setSyncVersion((value) => value + 1);
   }
   function newTask() {
     setOrchestration(undefined);
@@ -1235,7 +1231,7 @@ export default function Home() {
                     events={events}
                     approvals={approvals}
                     onDecision={(approvalId, decision) =>
-                      void decide(approvalId, decision)
+                      decide(approvalId, decision)
                     }
                   />
                   {turnError && (

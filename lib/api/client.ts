@@ -120,6 +120,14 @@ export class WebcodeApi {
   archiveTask(id: string, archived: boolean) {
     return this.post<Task>(`/tasks/${id}/archive`, { archived });
   }
+  deleteTask(id: string) {
+    return this.request<{ deleted: boolean }>(`/tasks/${id}`, {
+      method: 'DELETE',
+    });
+  }
+  deleteArchivedTasks() {
+    return this.request<{ deleted: number }>('/tasks', { method: 'DELETE' });
+  }
   tasks(projectId?: string) {
     return this.get<readonly Task[]>(
       `/tasks?includeArchived=true${projectId ? `&projectId=${encodeURIComponent(projectId)}` : ''}`,

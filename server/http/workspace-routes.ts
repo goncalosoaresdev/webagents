@@ -106,6 +106,14 @@ export const workspaceRoutes: FastifyPluginAsync<
     if (!path || !body) return;
     return { data: options.agents.setArchived(path.taskId, body.archived) };
   });
+  app.delete('/tasks', async () => {
+    return { data: options.agents.deleteArchivedTasks() };
+  });
+  app.delete('/tasks/:taskId', async (request, reply) => {
+    const path = parse(params, request.params, reply);
+    if (!path) return;
+    return { data: options.agents.deleteTask(path.taskId) };
+  });
   app.get('/tasks/:taskId', async (request, reply) => {
     const path = parse(params, request.params, reply);
     const query = parse(detailQuery, request.query, reply);

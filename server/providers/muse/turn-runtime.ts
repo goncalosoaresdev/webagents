@@ -1,3 +1,4 @@
+import { activityEdits, toolArguments } from '../../../lib/workspace/activity.ts';
 import { readFile, stat } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
 import {
@@ -79,6 +80,8 @@ export function itemEvent(item: FoldedItem): RuntimeEvent | undefined {
         }
       : undefined;
   }
+  const args = toolArguments(item.args);
+  const edits = activityEdits(args);
   return {
     type: finished ? 'activity.completed' : 'activity.started',
     data: {
@@ -86,7 +89,9 @@ export function itemEvent(item: FoldedItem): RuntimeEvent | undefined {
       kind: item.kind,
       title: itemTitle(item),
       status: item.status,
-      detail: item.commandText ?? item.tool,
+      detail: item.commandText ?? (typeof args.command === 'string' ? args.command : typeof args.description === 'string' ? args.description : item.tool),
+      edits: edits.length ? edits : undefined,
+      files: [args.file_path, args.path].filter((path): path is string => typeof path === 'string'),
       output: (item.visibleOutput ?? item.text)?.slice(-12_000),
       durationMs: item.durationMs,
       exitCode: item.exitCode,
@@ -144,8 +149,10 @@ function itemTitle(item: FoldedItem): string {
   return item.fallbackText ?? String(item.kind);
 }
 
-function turnOutcome(outcome: TurnOutcome): ExecuteTurnResult {
-  if (outcome.kind === 'unqueued') return { status: 'interrupted' };
+function turnOutcome(outcome: TurnOutcome, cancellationRequested: boolean): ExecuteTurnResult {
+  if (outcome.kind === 'unqueued') return cancellationRequested
+    ? { status: 'interrupted' }
+    : { status: 'failed', error: 'Muse removed this turn from its queue before it ran. No prompt was replayed.' };
   if (outcome.kind === 'terminalUnknown') {
     return {
       status: 'failed',
@@ -160,7 +167,9 @@ function turnOutcome(outcome: TurnOutcome): ExecuteTurnResult {
     };
   }
   if (outcome.params.terminal === 'completed') return { status: 'completed' };
-  if (outcome.params.terminal === 'cancelled') return { status: 'interrupted' };
+  if (outcome.params.terminal === 'cancelled') return cancellationRequested
+    ? { status: 'interrupted' }
+    : { status: 'failed', error: outcome.params.error?.message ?? 'Muse cancelled the turn unexpectedly. Any completed file changes remain; no prompt was replayed.' };
   return {
     status: 'failed',
     error: outcome.params.error?.message ?? 'Muse did not complete the task.',
@@ -263,6 +272,7 @@ export class MuseTurnRuntime implements AgentRuntime {
     const pending = new Set<number>();
     let nextApproval = 0;
     let waitingForApproval = 0;
+    let cancellationRequested = false;
     let idleTimer: ReturnType<typeof setTimeout> | undefined;
     let warningTimer: ReturnType<typeof setTimeout> | undefined;
     const resetWatchdog = () => {
@@ -432,6 +442,7 @@ export class MuseTurnRuntime implements AgentRuntime {
             }),
             combined,
           );
+          if (decision === 'cancel') cancellationRequested = true;
           return { choiceId: approvalChoice(request, decision) };
         } finally {
           waitingForApproval -= 1;
@@ -558,7 +569,7 @@ export class MuseTurnRuntime implements AgentRuntime {
           combined,
         );
         emitContext();
-        return turnOutcome(outcome);
+        return turnOutcome(outcome, cancellationRequested || combined.aborted);
       } finally {
         clearInterval(contextPoller);
         prompts.abort();

@@ -73,6 +73,8 @@ export interface WorkspaceStore {
 
   listTasks(projectId?: string, includeArchived?: boolean): readonly Task[];
   setTaskArchived(id: string, archivedAt: string | null): void;
+  deleteTask(id: string): boolean;
+  deleteArchivedTasks(): number;
   getTask(id: string): Task | undefined;
   getTaskDetail(id: string, afterSequence?: number): TaskDetail | undefined;
   createTask(input: CreateTaskInput): Task;

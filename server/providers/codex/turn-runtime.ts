@@ -1,3 +1,4 @@
+import { activityEdits } from '../../../lib/workspace/activity.ts';
 import { codexPermissions } from './permissions.ts';
 import { z } from 'zod';
 import { listModels } from './discovery.ts';
@@ -538,6 +539,7 @@ function activityFromItem(
       itemId: id,
       kind: item.type,
       title: `Update ${changes.length} file${changes.length === 1 ? '' : 's'}`,
+      edits: activityEdits(item),
       files: changes
         .slice(0, 50)
         .map((change) => optionalString(asRecord(change).path))

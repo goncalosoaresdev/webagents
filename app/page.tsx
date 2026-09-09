@@ -42,6 +42,7 @@ import {
   Settings2,
   Square,
   SquarePen,
+  Trash2,
   X,
 } from 'lucide-react';
 import { ProviderLogo } from '@/components/provider-logo';
@@ -163,6 +164,7 @@ export default function Home() {
   const [taskSearch, setTaskSearch] = useState('');
   const [searchOpen, setSearchOpen] = useState(false);
   const [archiveBusy, setArchiveBusy] = useState<string>();
+  const [emptyArchivedBusy, setEmptyArchivedBusy] = useState(false);
   const [tasks, setTasks] = useState<readonly Task[]>([]);
   const [providers, setProviders] = useState<readonly ProviderSnapshot[]>([]);
   const [detail, setDetail] = useState<TaskDetail>();
@@ -498,6 +500,33 @@ export default function Home() {
       );
     } finally {
       setArchiveBusy(undefined);
+    }
+  }
+
+  async function emptyArchived(count: number) {
+    if (!count || emptyArchivedBusy) return;
+    if (
+      !window.confirm(
+        `Permanently delete ${count} archived ${count === 1 ? 'task' : 'tasks'}? This cannot be undone.`,
+      )
+    )
+      return;
+    setEmptyArchivedBusy(true);
+    try {
+      await api.deleteArchivedTasks();
+      setTasks((current) => current.filter((entry) => !entry.archivedAt));
+      setDetail((current) =>
+        current?.task.archivedAt ? undefined : current,
+      );
+      setSyncVersion((value) => value + 1);
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : 'Unable to delete archived tasks.',
+      );
+    } finally {
+      setEmptyArchivedBusy(false);
     }
   }
   const visibleTasks = tasks.filter((task) =>
@@ -953,10 +982,29 @@ export default function Home() {
                   <div className="task-section-heading">
                     <h2>{archived ? 'Archived' : 'Active'}</h2>
                     <span>{sectionTasks.length}</span>
+                    {archived && sectionTasks.length > 0 && (
+                      <button
+                        type="button"
+                        className="task-section-empty"
+                        disabled={emptyArchivedBusy}
+                        aria-label={`Delete all ${sectionTasks.length} archived tasks`}
+                        title="Delete all archived tasks"
+                        onClick={() => void emptyArchived(sectionTasks.length)}
+                      >
+                        {emptyArchivedBusy ? (
+                          <Loader2 size={12} className="animate-spin" />
+                        ) : (
+                          <Trash2 size={12} />
+                        )}
+                      </button>
+                    )}
                   </div>
                   <div className="thread-list">
                     {sectionTasks.map((task) => (
-                      <div className="thread-card" key={task.id}>
+                      <div
+                        className={`thread-card${task.archivedAt ? ' is-archived' : ''}`}
+                        key={task.id}
+                      >
                         <button
                           type="button"
                           className={`thread-row${activeTaskId === task.id ? ' is-active' : ''}`}

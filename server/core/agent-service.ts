@@ -97,6 +97,31 @@ export class AgentService {
     return this.store.getTask(id)!;
   }
 
+  deleteTask(id: string): { deleted: boolean } {
+    const task = this.store.getTask(id);
+    if (!task) throw new ResourceNotFoundError('Task', id);
+    const controller = this.#controllers.get(id);
+    if (controller) controller.abort();
+    this.#controllers.delete(id);
+    this.#workspaces.delete(id);
+    this.#activeExecutions.delete(id);
+    this.store.deleteTask(id);
+    return { deleted: true };
+  }
+
+  deleteArchivedTasks(): { deleted: number } {
+    const archived = this.store.listTasks(undefined, true).filter((task) => Boolean(task.archivedAt));
+    for (const task of archived) {
+      const controller = this.#controllers.get(task.id);
+      if (controller) controller.abort();
+      this.#controllers.delete(task.id);
+      this.#workspaces.delete(task.id);
+      this.#activeExecutions.delete(task.id);
+    }
+    const deleted = this.store.deleteArchivedTasks();
+    return { deleted };
+  }
+
   getTask(id: string, afterSequence = 0): TaskDetail {
     const detail = this.store.getTaskDetail(id, afterSequence);
     if (!detail) throw new ResourceNotFoundError('Task', id);
@@ -403,6 +428,11 @@ export class AgentService {
       if (error)
         this.#emit(task.id, turn.id, 'runtime.error', { message: error });
     } finally {
+      if (this.#closed && controller.signal.aborted) {
+        this.#emit(task.id, turn.id, 'runtime.warning', {
+          message: 'This task stopped because the app server shut down or restarted. Completed file changes remain. Start a new turn to continue.',
+        });
+      }
       this.#controllers.delete(task.id);
       this.#workspaces.delete(task.id);
       this.#activeExecutions.delete(task.id);

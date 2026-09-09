@@ -40,3 +40,13 @@ void test('completion replaces deltas exactly and marks the message ready to flu
   const result = buildTurnTimeline([{ ...events[0], type: 'agent.message.delta', data: { itemId: 'm', text: 'Par' } }, { ...events[0], sequence: 2, type: 'agent.message.completed', data: { itemId: 'm', text: 'Final response.' } }]);
   assert.deepEqual(result[0], { kind: 'message', id: 'm', sequence: 1, text: 'Final response.', completed: true });
 });
+
+void test('one failed tool does not label the entire group as failed', () => {
+  const mixed = [
+    { ...events[0], type: 'activity.completed' as const, data: { itemId: 'one', title: 'Read', status: 'completed' } },
+    { ...events[0], sequence: 2, type: 'activity.completed' as const, data: { itemId: 'two', title: 'Search', status: 'failed' } },
+  ];
+  const html = renderToStaticMarkup(createElement(TurnResponse, { turn: { ...turn, status: 'interrupted' }, events: mixed, approvals: [], onDecision() {} }));
+  assert.match(html, /Used 2 tools · 1 failed/);
+  assert.doesNotMatch(html, /Failed 2 tools/);
+});

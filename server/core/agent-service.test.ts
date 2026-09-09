@@ -115,6 +115,7 @@ void test('shutdown waits for final status and rejects changed idempotency paylo
   finish({ status: 'completed' });
   await closing;
   assert.equal(store.getTask(task.id)?.status, 'interrupted');
+  assert.ok(service.getTask(task.id).events.some(event => event.type === 'runtime.warning' && String(event.data.message).includes('server shut down or restarted')));
   assert.equal(
     service.getTask(task.id).events.at(-1)?.data.status,
     'interrupted',

@@ -1,15 +1,7 @@
 'use client';
 
 import { useId, useRef, useState } from 'react';
-import {
-  Check,
-  ChevronRight,
-  FilePenLine,
-  LoaderCircle,
-  ShieldCheck,
-  Terminal,
-  X,
-} from 'lucide-react';
+import { LoaderCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import type {
   ApprovalDecision,
@@ -30,18 +22,34 @@ export function ApprovalCard({ approval, onDecision }: ApprovalCardProps) {
     typeof approval.details[key] === 'string'
       ? String(approval.details[key])
       : '';
-  const command = value('command');
-  const path = value('path') || value('grantRoot');
+  // Muse may supply tool arguments in its summary rather than structured details.
+  let args: Record<string, unknown> = {};
+  const jsonStart = approval.summary.indexOf('{');
+  if (jsonStart >= 0) {
+    try {
+      const parsed: unknown = JSON.parse(approval.summary.slice(jsonStart));
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
+        args = parsed as Record<string, unknown>;
+    } catch {
+      /* Keep the original summary visible if arguments are incomplete. */
+    }
+  }
+  const argument = (key: string) =>
+    typeof args[key] === 'string' ? String(args[key]) : '';
+  const command = value('command') || argument('command');
+  const path = value('path') || value('grantRoot') || argument('path');
   const action = command || path;
-  const reason = value('reason');
-  const tool = value('toolName');
+  const reason =
+    value('reason') ||
+    argument('description') ||
+    (Object.keys(args).length ? '' : approval.summary);
+  const directory = value('cwd') || argument('cwd');
   const supported = Array.isArray(approval.details.supportedDecisions)
     ? approval.details.supportedDecisions
     : undefined;
   const canAccept = !supported || supported.includes('accept');
   const canDecline = !supported || supported.includes('decline');
   const canCancel = supported?.includes('cancel');
-  const Icon = approval.kind === 'fileChange' ? FilePenLine : Terminal;
 
   async function decide(decision: ApprovalDecision) {
     if (submitting.current) return;
@@ -68,64 +76,27 @@ export function ApprovalCard({ approval, onDecision }: ApprovalCardProps) {
       aria-labelledby={titleId}
       aria-busy={pending !== null}
     >
-      <header className="approval-heading">
-        <span className="approval-icon">
-          <ShieldCheck aria-hidden="true" />
-        </span>
-        <div>
-          <h3 id={titleId}>Permission needed</h3>
-          <p>The agent is waiting for your decision.</p>
-        </div>
-        <span className="approval-badge">
-          {pending ? 'Sending' : 'Your turn'}
-        </span>
-      </header>
-      <div className="approval-request">
-        <div className="approval-action-label">
-          <Icon aria-hidden="true" />
-          <span>
-            {tool ||
-              (approval.kind === 'fileChange' ? 'File access' : 'Run command')}
-          </span>
-        </div>
-        {action ? (
-          <pre className="approval-command">{action}</pre>
-        ) : (
-          <p className="approval-description">{approval.summary}</p>
-        )}
-        {value('cwd') && (
-          <div className="approval-location">
-            <span>In</span>
-            <code>{value('cwd')}</code>
-          </div>
-        )}
-        {reason && reason !== action && (
-          <p className="approval-description">{reason}</p>
-        )}
-        {action &&
-          approval.summary !== action &&
-          approval.summary !== reason &&
-          (tool ? (
-            <details className="approval-context">
-              <summary>
-                <ChevronRight aria-hidden="true" />
-                Request details
-              </summary>
-              <pre>{approval.summary}</pre>
-            </details>
-          ) : (
-            <p className="approval-description">{approval.summary}</p>
-          ))}
-      </div>
+      <h3 id={titleId}>
+        {approval.kind === 'fileChange'
+          ? 'Allow file access?'
+          : 'Allow this action?'}
+      </h3>
+      {reason && reason !== action && (
+        <p className="approval-description">{reason}</p>
+      )}
+      {action ? (
+        <pre className="approval-command">{action}</pre>
+      ) : (
+        !reason && <p className="approval-description">{approval.summary}</p>
+      )}
+      {directory && <code className="approval-location">{directory}</code>}
       {error && (
         <p className="approval-error" role="alert">
           {error}
         </p>
       )}
       <footer className="approval-footer">
-        <output className="approval-scope">
-          {pending ? 'Sending your decision…' : 'Applies to this request only'}
-        </output>
+        <output className="approval-status">{pending ? 'Sending…' : ''}</output>
         <div className="approval-actions">
           {(canDecline || canCancel) && (
             <Button
@@ -134,7 +105,6 @@ export function ApprovalCard({ approval, onDecision }: ApprovalCardProps) {
               disabled={pending !== null}
               onClick={() => void decide(canDecline ? 'decline' : 'cancel')}
             >
-              <X />
               {canDecline ? 'Decline' : 'Cancel'}
             </Button>
           )}
@@ -144,10 +114,8 @@ export function ApprovalCard({ approval, onDecision }: ApprovalCardProps) {
               disabled={pending !== null}
               onClick={() => void decide('accept')}
             >
-              {pending === 'accept' ? (
+              {pending === 'accept' && (
                 <LoaderCircle className="tool-spinner" />
-              ) : (
-                <Check />
               )}
               Allow once
             </Button>

@@ -1,3 +1,4 @@
+import { activityEdits, toolArguments } from '../../../lib/workspace/activity.ts';
 import type { ProviderModel } from '../../../lib/providers/contracts.ts';
 import { readFile } from 'node:fs/promises';
 import { z } from 'zod';
@@ -535,6 +536,9 @@ function normalizeUpdate(
       title: optionalString(update.title) ?? (type === 'tool_call' ? titleCase(kind ?? 'other') : undefined),
       status,
       output: toolOutput(update),
+      edits: (() => { const content = activityEdits(update); const edits = content.length ? content : activityEdits(update.rawInput); return edits.length ? edits : undefined; })(),
+      detail: optionalString(toolArguments(update.rawInput).command),
+      files: Array.isArray(update.locations) ? update.locations.map(entry => optionalString(asRecord(entry).path)).filter(Boolean) : undefined,
     };
     return {
       event: {

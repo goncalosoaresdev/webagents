@@ -41,7 +41,7 @@ const sessionObject = (params) => ({
   status: 'idle',
   turnCount: 0,
   updatedAt: now,
-  workspaceRoot: mode === 'wrong-root' ? '/tmp/other-workspace' : params.workspaceRoot,
+  workspaceRoot: mode === 'wrong-root' ? '/tmp/other-workspace' : params.workspaceRoot ?? process.cwd(),
 });
 setInterval(() => {}, 1000);
 process.stdin.on('end', () => process.exit(0));
@@ -217,7 +217,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
       });
       return;
     }
-    if (mode === 'approval') {
+    if (mode === 'approval' || mode === 'approval-cancel') {
       send({
         jsonrpc: '2.0',
         method: 'approval/requested',
@@ -292,7 +292,7 @@ function completeTurn(sessionId, turnId) {
     params: {
       sessionId,
       turnId,
-      terminal: 'completed',
+      terminal: (mode === 'unexpected-cancel' || mode === 'approval-cancel') ? 'cancelled' : 'completed',
       viewCursor: nextCursor(),
       sourceRange: sourceRange(),
     },
@@ -715,4 +715,35 @@ void test('absolute turn timeout caps a trickling host', { timeout: 10_000 }, as
   );
   assert.equal(result.status, 'failed');
   assert.match(result.error ?? '', /time limit/);
+});
+
+void test('unexpected provider cancellation is a failure with an explanation', async (context) => {
+  const options = await fixture(context, 'unexpected-cancel');
+  const runtime = new MuseTurnRuntime(options);
+  context.after(() => runtime.close());
+  const result = await runtime.executeTurn({ taskId: 'cancel', cwd: options.cwd, prompt: 'hello' }, handlers());
+  assert.equal(result.status, 'failed');
+  assert.match(result.error ?? '', /cancelled the turn unexpectedly/);
+});
+
+void test('a durable Muse session resumes for a follow-up after cancellation', async (context) => {
+  const options = await fixture(context, 'unexpected-cancel');
+  const first = new MuseTurnRuntime(options);
+  context.after(() => first.close());
+  let sessionId = '';
+  const initial = await first.executeTurn({ taskId: 'resume', cwd: options.cwd, prompt: 'hello' }, handlers({ onProviderThread(id) { sessionId = id; } }));
+  assert.equal(initial.status, 'failed');
+  const next = new MuseTurnRuntime({ ...options, environment: { ...options.environment, FIXTURE_MODE: 'normal' } });
+  context.after(() => next.close());
+  const result = await next.executeTurn({ taskId: 'resume', cwd: options.cwd, providerThreadId: sessionId, prompt: 'continue' }, handlers());
+  assert.equal(result.status, 'completed');
+});
+
+void test('an explicit approval Cancel remains an intentional interruption', async (context) => {
+  const options = await fixture(context, 'approval-cancel');
+  const runtime = new MuseTurnRuntime(options);
+  context.after(() => runtime.close());
+  const result = await runtime.executeTurn({ taskId: 'cancel', cwd: options.cwd, prompt: 'hello' }, handlers());
+  assert.equal(result.status, 'interrupted');
+  assert.equal(result.error, undefined);
 });

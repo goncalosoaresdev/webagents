@@ -21,11 +21,11 @@ const render = (approval = request) =>
   );
 void test('separates command, directory, reason and request-scoped actions', () => {
   const html = render();
-  assert.match(html, /Permission needed/);
+  assert.match(html, /Allow this action\?/);
   assert.match(html, /<pre class="approval-command">npm run build<\/pre>/);
   assert.match(html, /\/workspace\/app/);
   assert.match(html, /Run the build to validate changes\./);
-  assert.match(html, /Applies to this request only/);
+  assert.doesNotMatch(html, /Your turn|Applies to this request only/);
   assert.match(html, /Allow once/);
   assert.match(html, /Decline/);
 });
@@ -44,7 +44,27 @@ void test('shows file paths and safely renders provider text', () => {
     summary: '<script>bad</script>',
     details: { path: '/workspace/file.ts' },
   });
-  assert.match(html, /File access/);
+  assert.match(html, /Allow file access\?/);
   assert.match(html, /\/workspace\/file.ts/);
   assert.doesNotMatch(html, /<script>/);
+});
+
+void test('extracts readable action and description from Muse JSON summaries', () => {
+  const html = render({
+    ...request,
+    summary:
+      'network: ' +
+      JSON.stringify({
+        command: 'git push origin main',
+        description: 'Push changes',
+        yield_time_ms: 120000,
+      }),
+    details: { toolName: 'network' },
+  });
+  assert.match(html, /Push changes/);
+  assert.match(
+    html,
+    /<pre class="approval-command">git push origin main<\/pre>/,
+  );
+  assert.doesNotMatch(html, /yield_time_ms|network:/);
 });

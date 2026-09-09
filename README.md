@@ -26,6 +26,12 @@ model discovery, deterministic process ownership, and provider-neutral UI events
 
 ## Development
 
+The default server does **not** restart when source files change. This lets agents
+edit this repository without killing their own running tasks. The frontend still
+hot-reloads. Restart `npm run dev` after a task finishes to load backend changes.
+For manual backend development, `npm run dev:server:watch` opts into automatic
+restarts; do not use it while an agent is editing this app's server or shared code.
+
 ```bash
 npm install
 npm run dev

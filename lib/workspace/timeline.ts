@@ -1,3 +1,4 @@
+import { readFileEdits, type FileEdit } from './activity';
 import type { TaskEvent } from './contracts';
 
 export interface TimelineMessage {
@@ -27,6 +28,7 @@ export interface TimelineTool {
   durationMs?: number;
   exitCode?: number;
   files: readonly string[];
+  edits?: readonly FileEdit[];
 }
 
 export type TurnTimelineItem = TimelineMessage | TimelineReasoning | TimelineTool;
@@ -91,6 +93,7 @@ export function buildTurnTimeline(events: readonly TaskEvent[]): TurnTimelineIte
         status: ['pending', 'in_progress', 'inProgress'].includes(text(event.data.status))
           ? 'inProgress'
           : text(event.data.status) || (event.type === 'activity.completed' ? 'completed' : 'inProgress'),
+        edits: readFileEdits(event.data.edits) ?? prior?.edits,
         durationMs: number(event.data.durationMs) ?? prior?.durationMs,
         exitCode: number(event.data.exitCode) ?? prior?.exitCode,
         files: Array.isArray(event.data.files)

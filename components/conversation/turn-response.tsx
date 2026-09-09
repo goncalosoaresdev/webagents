@@ -1,5 +1,7 @@
 'use client';
 
+import { ActivityPreview, FileEditPreview } from './activity-preview';
+
 import { modelDisplayName, providerDisplayName } from '@/lib/providers/display';
 
 import { useEffect, useMemo, useState } from 'react';
@@ -66,27 +68,12 @@ function groupTools(items: readonly TurnTimelineItem[]): RenderItem[] {
 
 function toolGroupLabel(tools: readonly TimelineTool[]) {
   const running = tools.some((tool) => tool.status === 'inProgress');
-  const failed = tools.some(
-    (tool) =>
-      tool.status === 'failed' ||
-      (tool.exitCode !== undefined && tool.exitCode !== 0),
-  );
+  const failed = tools.filter((tool) => tool.status === 'failed' || (tool.exitCode !== undefined && tool.exitCode !== 0)).length;
   const commands = tools.every((tool) => tool.toolKind === 'commandExecution');
   const changes = tools.every((tool) => tool.toolKind === 'fileChange');
-  const verb = failed
-    ? 'Failed'
-    : running
-      ? 'Running'
-      : commands
-        ? 'Ran'
-        : changes
-          ? 'Updated'
-          : 'Used';
-  if (commands)
-    return `${verb} ${tools.length} command${tools.length === 1 ? '' : 's'}`;
-  if (changes)
-    return `${verb} ${tools.length} file operation${tools.length === 1 ? '' : 's'}`;
-  return `${verb} ${tools.length} tool${tools.length === 1 ? '' : 's'}`;
+  const verb = running ? 'Running' : commands ? 'Ran' : changes ? 'Updated' : 'Used';
+  const noun = commands ? 'command' : changes ? 'file operation' : 'tool';
+  return `${verb} ${tools.length} ${noun}${tools.length === 1 ? '' : 's'}${failed ? ` · ${failed} failed` : ''}`;
 }
 
 function ToolGroup({ tools, live = false }: { tools: readonly TimelineTool[]; live?: boolean }) {
@@ -99,20 +86,7 @@ function ToolGroup({ tools, live = false }: { tools: readonly TimelineTool[]; li
   if (live) return (
     <section className="live-activity" aria-label="Live tool activity">
       <div className="live-activity-heading">{toolGroupLabel(tools)}</div>
-      {tools.map((tool) => (
-        <div className="live-activity-item" key={tool.id}>
-          <span className="tool-call-state">
-            {tool.status === 'inProgress' ? <LoaderCircle className="tool-spinner" /> : tool.status === 'failed' || (tool.exitCode !== undefined && tool.exitCode !== 0) ? <Circle /> : <Check />}
-          </span>
-          <div>
-            <strong>{tool.title}</strong>
-            <span className="live-activity-status">{tool.status === 'inProgress' ? 'Running' : tool.status === 'failed' || (tool.exitCode !== undefined && tool.exitCode !== 0) ? 'Failed' : 'Finished'}</span>
-            {tool.detail && <p>{tool.detail}</p>}
-            {tool.files.length > 0 && <p>{tool.files.join(', ')}</p>}
-            {tool.output && <pre>{tool.output.slice(-600).split('\n').slice(-4).join('\n')}</pre>}
-          </div>
-        </div>
-      ))}
+      {tools.map((tool) => <ActivityPreview key={tool.id} tool={tool} />)}
       <ToolGroup tools={tools} />
     </section>
   );
@@ -143,6 +117,7 @@ function ToolGroup({ tools, live = false }: { tools: readonly TimelineTool[]; li
               <strong>{tool.title}</strong>
               {tool.detail && <small>{tool.detail}</small>}
               {tool.files.length > 0 && <small>{tool.files.join(', ')}</small>}
+              {tool.edits?.map((edit, index) => <FileEditPreview key={`${edit.path}:${index}`} edit={edit} />)}
               {tool.output && <pre>{tool.output}</pre>}
             </div>
             {tool.durationMs !== undefined && (

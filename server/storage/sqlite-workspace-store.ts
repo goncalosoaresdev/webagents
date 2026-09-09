@@ -216,6 +216,20 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       .run(archivedAt, id);
   }
 
+  deleteTask(id: string): boolean {
+    const result = this.#database
+      .prepare('DELETE FROM tasks WHERE id = ?')
+      .run(id);
+    return result.changes > 0;
+  }
+
+  deleteArchivedTasks(): number {
+    const result = this.#database
+      .prepare('DELETE FROM tasks WHERE archived_at IS NOT NULL')
+      .run();
+    return result.changes;
+  }
+
   getTask(id: string): Task | undefined {
     const row = this.#database
       .prepare('SELECT * FROM tasks WHERE id = ?')

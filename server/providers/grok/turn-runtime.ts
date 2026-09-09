@@ -527,23 +527,18 @@ function normalizeUpdate(
   if (type === 'tool_call' || type === 'tool_call_update') {
     const id =
       optionalString(update.toolCallId) ?? optionalString(update.id) ?? 'tool';
-    const kind = optionalString(update.kind) ?? 'other';
+    const kind = optionalString(update.kind);
     const status = optionalString(update.status);
-    if (
-      type === 'tool_call_update' &&
-      (status === 'in_progress' || status === 'pending')
-    )
-      return {};
     const activity = {
       itemId: id,
       kind,
-      title: safeString(update.title, titleCase(kind)),
+      title: optionalString(update.title) ?? (type === 'tool_call' ? titleCase(kind ?? 'other') : undefined),
       status,
       output: toolOutput(update),
     };
     return {
       event: {
-        type: type === 'tool_call' ? 'activity.started' : 'activity.completed',
+        type: type === 'tool_call' || !status || status === 'in_progress' || status === 'pending' ? 'activity.started' : 'activity.completed',
         data: activity,
       },
     };

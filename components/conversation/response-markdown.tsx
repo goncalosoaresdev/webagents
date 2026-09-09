@@ -13,6 +13,7 @@ import {
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Check, Copy } from 'lucide-react';
+import { completeWordPrefix } from '../../lib/workspace/streaming-text';
 import { Button } from '../ui/button';
 
 function CodeBlock({ children }: { children?: ReactNode }) {
@@ -72,12 +73,36 @@ function CodeBlock({ children }: { children?: ReactNode }) {
   );
 }
 
+/** Batch token bursts and briefly hold incomplete words, flushing on completion or a pause. */
+function useStreamingText(text: string, streaming: boolean) {
+  const [visible, setVisible] = useState(() => streaming ? completeWordPrefix(text) : text);
+  const latest = useRef(text);
+  const changedAt = useRef(0);
+  useEffect(() => {
+    latest.current = text;
+    changedAt.current = Date.now();
+  }, [text]);
+  useEffect(() => {
+    if (!streaming) return;
+    const timer = window.setInterval(() => {
+      setVisible(Date.now() - changedAt.current >= 180
+        ? latest.current : completeWordPrefix(latest.current));
+    }, 60);
+    return () => window.clearInterval(timer);
+  }, [streaming]);
+  // Completions and corrections must never leave stale or truncated text on screen.
+  return !streaming || !text.startsWith(visible) ? text : visible;
+}
+
 /** Parse Markdown as React elements; provider output never becomes raw HTML. */
 export const ResponseMarkdown = memo(function ResponseMarkdown({
   text,
+  streaming = false,
 }: {
   text: string;
+  streaming?: boolean;
 }) {
+  const displayedText = useStreamingText(text, streaming);
   return (
     <div className="response-prose">
       <Markdown
@@ -112,7 +137,7 @@ export const ResponseMarkdown = memo(function ResponseMarkdown({
             ),
         }}
       >
-        {text}
+        {displayedText}
       </Markdown>
     </div>
   );

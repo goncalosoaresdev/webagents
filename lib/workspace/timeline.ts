@@ -5,6 +5,7 @@ export interface TimelineMessage {
   id: string;
   sequence: number;
   text: string;
+  completed?: boolean;
 }
 
 export interface TimelineReasoning {
@@ -50,6 +51,7 @@ export function buildTurnTimeline(events: readonly TaskEvent[]): TurnTimelineIte
         id: itemId,
         sequence: current?.sequence ?? event.sequence,
         text: nextText,
+        completed: event.type === 'agent.message.completed',
       });
       continue;
     }
@@ -86,7 +88,9 @@ export function buildTurnTimeline(events: readonly TaskEvent[]): TurnTimelineIte
         title: text(event.data.title) || prior?.title || 'Tool call',
         detail: text(event.data.detail) || prior?.detail,
         output: text(event.data.output) || prior?.output,
-        status: text(event.data.status) || (event.type === 'activity.completed' ? 'completed' : 'inProgress'),
+        status: ['pending', 'in_progress', 'inProgress'].includes(text(event.data.status))
+          ? 'inProgress'
+          : text(event.data.status) || (event.type === 'activity.completed' ? 'completed' : 'inProgress'),
         durationMs: number(event.data.durationMs) ?? prior?.durationMs,
         exitCode: number(event.data.exitCode) ?? prior?.exitCode,
         files: Array.isArray(event.data.files)

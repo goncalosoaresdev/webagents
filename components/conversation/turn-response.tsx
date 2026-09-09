@@ -89,12 +89,32 @@ function toolGroupLabel(tools: readonly TimelineTool[]) {
   return `${verb} ${tools.length} tool${tools.length === 1 ? '' : 's'}`;
 }
 
-function ToolGroup({ tools }: { tools: readonly TimelineTool[] }) {
+function ToolGroup({ tools, live = false }: { tools: readonly TimelineTool[]; live?: boolean }) {
   const running = tools.some((tool) => tool.status === 'inProgress');
   const failed = tools.some(
     (tool) =>
       tool.status === 'failed' ||
       (tool.exitCode !== undefined && tool.exitCode !== 0),
+  );
+  if (live) return (
+    <section className="live-activity" aria-label="Live tool activity">
+      <div className="live-activity-heading">{toolGroupLabel(tools)}</div>
+      {tools.map((tool) => (
+        <div className="live-activity-item" key={tool.id}>
+          <span className="tool-call-state">
+            {tool.status === 'inProgress' ? <LoaderCircle className="tool-spinner" /> : tool.status === 'failed' || (tool.exitCode !== undefined && tool.exitCode !== 0) ? <Circle /> : <Check />}
+          </span>
+          <div>
+            <strong>{tool.title}</strong>
+            <span className="live-activity-status">{tool.status === 'inProgress' ? 'Running' : tool.status === 'failed' || (tool.exitCode !== undefined && tool.exitCode !== 0) ? 'Failed' : 'Finished'}</span>
+            {tool.detail && <p>{tool.detail}</p>}
+            {tool.files.length > 0 && <p>{tool.files.join(', ')}</p>}
+            {tool.output && <pre>{tool.output.slice(-600).split('\n').slice(-4).join('\n')}</pre>}
+          </div>
+        </div>
+      ))}
+      <ToolGroup tools={tools} />
+    </section>
   );
   return (
     <details
@@ -135,12 +155,12 @@ function ToolGroup({ tools }: { tools: readonly TimelineTool[] }) {
   );
 }
 
-function TimelineItems({ items }: { items: readonly TurnTimelineItem[] }) {
+function TimelineItems({ items, live = false }: { items: readonly TurnTimelineItem[]; live?: boolean }) {
   return (
     <>
       {groupTools(items).map((item) => {
         if (item.kind === 'message')
-          return <ResponseMarkdown key={item.id} text={item.text} />;
+          return <ResponseMarkdown key={item.id} text={item.text} streaming={live && !item.completed} />;
         if (item.kind === 'reasoning')
           return (
             <details className="reasoning-summary" key={item.id} open>
@@ -153,13 +173,14 @@ function TimelineItems({ items }: { items: readonly TurnTimelineItem[] }) {
                   <ResponseMarkdown
                     key={`${item.id}:${index}`}
                     text={section}
+                    streaming={live}
                   />
                 ))}
               </div>
             </details>
           );
         if (item.kind === 'tool-group')
-          return <ToolGroup key={item.id} tools={item.tools} />;
+          return <ToolGroup key={item.id} tools={item.tools} live={live} />;
         return null;
       })}
     </>
@@ -302,7 +323,7 @@ export function TurnResponse({
             </span>
           </div>
         )}
-        <TimelineItems items={visibleItems} />
+        <TimelineItems items={visibleItems} live={!settled} />
         {!settled && timeline.length === 0 && (
           <p className="agent-note">Starting…</p>
         )}

@@ -6,6 +6,7 @@ import { ProviderSettings } from '@/components/settings/provider-settings';
 import { ConversationNavigator } from '@/components/conversation/conversation-navigator';
 import { conversationStops } from '@/lib/workspace/conversation-navigation';
 
+import { ContextWindow } from '@/components/conversation/context-window';
 import { UsageLimits } from '@/components/conversation/usage-limits';
 
 import { AttachmentPicker } from '@/components/conversation/attachment-picker';
@@ -1423,7 +1424,13 @@ export default function Home() {
                 onPermissionMode={setPermissionMode}
               />
             </div>
-            <UsageLimits key={providerId} api={api} providerId={providerId} />
+            <div className="composer-usage">
+              <ContextWindow
+                events={detail?.task.id === activeTaskId ? detail.events : []}
+                providerId={providerId}
+              />
+              <UsageLimits key={providerId} api={api} providerId={providerId} />
+            </div>
           </div>
         </div>
         <TerminalPanel

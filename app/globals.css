@@ -1378,3 +1378,6 @@ nav > section + section .task-section-heading { margin-top: 22px; }
 .dictation-stop:hover { background: #343439; }
 .dictation-cancel { display: grid; place-items: center; width: 32px; height: 32px; flex: none; border-radius: 999px; color: #8b8b93; }
 .dictation-cancel:hover { background: #ffffff0d; color: #e5e5eb; }
+
+.composer-usage { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+@media(max-width:760px) { .composer-action-strip { flex-wrap: wrap; } .composer-usage { margin-left: auto; } }

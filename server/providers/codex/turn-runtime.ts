@@ -391,6 +391,21 @@ function normalizeNotification(
     typeof params.threadId === 'string' ? params.threadId : undefined;
   if (expectedThreadId && threadId && threadId !== expectedThreadId) return {};
 
+  if (notification.method === 'thread/tokenUsage/updated') {
+    const usage = asRecord(params.tokenUsage);
+    const last = asRecord(usage.last);
+    return {
+      event: {
+        type: 'context.updated',
+        data: {
+          providerId: 'codex',
+          usedTokens: last.totalTokens,
+          windowTokens: usage.modelContextWindow,
+        },
+      },
+    };
+  }
+
   if (
     notification.method === 'item/agentMessage/delta' &&
     typeof params.delta === 'string'

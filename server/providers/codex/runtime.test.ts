@@ -39,6 +39,7 @@ readline.createInterface({input: process.stdin}).on('line', line => {
     if (mode === 'bad-event') { send({method:'item/agentMessage/delta',params:{itemId:5,delta:8}}); return; }
     send({id:0,method:'item/commandExecution/requestApproval',params:{threadId:'thread',turnId:'turn',itemId:'command',command:'echo hello'}});
   } else if (m.id === 0 && m.result) {
+    send({method:'thread/tokenUsage/updated',params:{threadId:'thread',turnId:'turn',tokenUsage:{last:{totalTokens:1234},total:{totalTokens:99999},modelContextWindow:10000}}});
     send({method:'item/completed',params:{threadId:'thread',turnId:'turn',item:{id:'answer',type:'agentMessage',text:'Done'}}});
     send({method:'turn/completed',params:{threadId:'thread',turn:{id:'turn',status:'completed'}}});
   }
@@ -254,4 +255,27 @@ void test('delivers native local images and a filesystem manifest without base64
     },
   );
   assert.equal(result.status, 'completed');
+});
+
+void test('captures provider context occupancy instead of cumulative tokens', async (context) => {
+  const options = await fixture(context);
+  const runtime = new CodexTurnRuntime(options);
+  context.after(() => runtime.close());
+  const reports: unknown[] = [];
+  await runtime.executeTurn(
+    { taskId: 'task', cwd: options.cwd, prompt: 'hello' },
+    {
+      onProviderThread() {},
+      onProviderTurn() {},
+      onEvent(event) {
+        if (event.type === 'context.updated') reports.push(event.data);
+      },
+      async requestApproval() {
+        return 'accept';
+      },
+    },
+  );
+  assert.deepEqual(reports, [
+    { providerId: 'codex', usedTokens: 1234, windowTokens: 10000 },
+  ]);
 });

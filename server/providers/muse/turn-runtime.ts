@@ -427,6 +427,21 @@ export class MuseTurnRuntime implements AgentRuntime {
       resetWatchdog();
       state.turnId = turn.turnId;
       handlers.onProviderTurn(turn.turnId);
+      let lastContext = '';
+      const emitContext = () => {
+        const value = session.fold.sessionState.get('session/contextUsage');
+        const serialized = JSON.stringify(value);
+        if (!value || serialized === lastContext) return;
+        lastContext = serialized;
+        handlers.onEvent({
+          type: 'context.updated',
+          data: {
+            ...(value as Record<string, unknown>),
+            providerId: 'muse',
+          },
+        });
+      };
+      emitContext();
       const kinds = new Map<string, string>();
       const streamed = new Map<string, number>();
       const queuedDeltas = new Map<
@@ -475,6 +490,7 @@ export class MuseTurnRuntime implements AgentRuntime {
         (async () => {
           for await (const item of turn.items()) {
             resetWatchdog();
+            emitContext();
             const itemId = String(item.itemId);
             kinds.set(itemId, String(item.kind));
             const held = queuedDeltas.get(itemId);
@@ -507,6 +523,7 @@ export class MuseTurnRuntime implements AgentRuntime {
           ]),
           combined,
         );
+        emitContext();
         return turnOutcome(outcome);
       } finally {
         prompts.abort();

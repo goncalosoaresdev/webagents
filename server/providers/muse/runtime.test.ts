@@ -282,6 +282,10 @@ function completeTurn(sessionId, turnId) {
       item: { itemId, kind: 'agentMessage', revision: 2, status: 'completed', turnId, text: 'Done' },
     },
   });
+  send({ jsonrpc: '2.0', method: 'session/contextUsage', params: {
+    sessionId, viewCursor: nextCursor(), sourceRange: sourceRange(),
+    usedTokens: 250, windowTokens: 1000, pressure: 'normal',
+  } });
   send({
     jsonrpc: '2.0',
     method: 'turn/completed',
@@ -362,6 +366,7 @@ void test('completes a Muse turn through the SDK facade', async (context) => {
   assert.equal(result.status, 'completed');
   assert.ok(events.includes('agent.message.delta'));
   assert.ok(events.includes('agent.message.completed'));
+  assert.ok(events.includes('context.updated'));
 });
 
 void test('interrupt works during initialization and shutdown waits for execution', async (context) => {

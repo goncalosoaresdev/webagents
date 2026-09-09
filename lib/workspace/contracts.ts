@@ -86,6 +86,7 @@ export interface Turn {
 }
 
 export type TaskEventType =
+  | 'context.updated'
   | 'execution.status'
   | 'user.message'
   | 'agent.message.delta'
